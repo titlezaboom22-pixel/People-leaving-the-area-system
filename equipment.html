@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stationary Request Form</title>
+    <meta name="theme-color" content="#2563eb">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <link rel="manifest" href="/manifest.json">
+    <link rel="apple-touch-icon" href="/icon-192.svg">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Sarabun:wght@300;400;600;700&display=swap');
+        
+        body {
+            font-family: 'Sarabun', sans-serif;
+            background-color: #f0f2f5;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+        }
+
+        .form-container {
+            background-color: white;
+            width: 210mm;
+            min-height: 297mm;
+            padding: 10mm;
+            box-shadow: 0 0 20px rgba(0,0,0,0.15);
+            border: 1px solid #ccc;
+            box-sizing: border-box;
+        }
+
+        .main-border {
+            border: 1.5px solid black;
+            height: 100%;
+            display: flex;
+            flex-direction: column;
+            box-sizing: border-box;
+            padding: 5px;
+        }
+
+        .editable-line {
+            border: none;
+            border-bottom: 1px dotted black;
+            background: transparent;
+            outline: none;
+            padding: 0 5px;
+            font-family: 'Sarabun', sans-serif;
+            min-width: 0;
+        }
+
+        .editable-line:focus {
+            background-color: #f9fafb;
+            border-bottom: 1.5px solid blue;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 11px;
+        }
+
+        th, td {
+            border: 1px solid black;
+            padding: 2px 4px;
+            height: 22px;
+        }
+
+        th {
+            background-color: #e5e7eb;
+            text-align: center;
+            font-weight: bold;
+        }
+
+        /* ปรับแต่งช่องในตารางให้พิมพ์แก้ไขได้ */
+        .qty-input, .name-input {
+            width: 100%;
+            border: none;
+            background: transparent;
+            outline: none;
+            font-family: 'Sarabun', sans-serif;
+            padding: 0;
+            margin: 0;
+        }
+
+        .qty-input {
+            text-align: center;
+        }
+
+        .name-input:focus, .qty-input:focus {
+            background-color: #f0f7ff;
+        }
+
+        .header-info td {
+            border: none;
+            padding: 2px;
+        }
+
+        /* Signature Styles */
+        .signature-wrapper {
+            position: relative;
+            margin: 0 auto;
+        }
+        .sig-canvas {
+            border-bottom: 1px dotted black;
+            cursor: crosshair;
+            background-color: transparent;
+            touch-action: none;
+        }
+        .sig-controls {
+            position: absolute;
+            top: -18px;
+            right: 0;
+            display: flex;
+            gap: 12px;
+            z-index: 50;
+        }
+        .sig-btn {
+            font-size: 10px;
+            cursor: pointer;
+            padding: 0 2px;
+            background: transparent;
+            transition: all 0.2s;
+            border-bottom: 1.5px solid transparent;
+            font-weight: 600;
+        }
+        .upload-btn { 
+            color: #3b82f6; 
+            border-bottom-color: #3b82f6;
+        }
+        .upload-btn:hover { color: #2563eb; border-bottom-width: 2px; }
+        
+        .clear-btn { 
+            color: #ef4444; 
+            border-bottom-color: #ef4444;
+        }
+        .clear-btn:hover { color: #dc2626; border-bottom-width: 2px; }
+
+        @media print {
+            body { background-color: white; padding: 0; }
+            .form-container { box-shadow: none; border: none; margin: 0; padding: 5mm; }
+            .no-print { display: none; }
+            .sig-btn { display: none; }
+            .editable-line { border-bottom: 1px dotted black; }
+        }
+    </style>
+</head>
+<body>
+
+    <div class="no-print mb-6 flex gap-4">
+        <!-- ปุ่มกลับหน้าหลัก -->
+        <button
+          onclick="if (window.opener) { window.close(); } else { window.history.back(); }"
+          class="bg-gray-500 text-white px-8 py-2.5 rounded shadow-lg hover:bg-gray-600 transition-all font-bold uppercase tracking-wide"
+        >
+          ← กลับหน้าหลัก
+        </button>
+
+        <!-- ปุ่มส่งให้ (คัดลอกข้อความเพื่อส่ง LINE/อีเมล) -->
+        <button
+          onclick="sendEquipmentRequest()"
+          class="bg-emerald-600 text-white px-8 py-2.5 rounded shadow-lg hover:bg-emerald-700 transition-all font-bold uppercase tracking-wide"
+        >
+          ส่งให้
+        </button>
+
+        <!-- ปุ่มสำหรับ ADMIN: แก้ไข / บันทึก -->
+        <button
+          id="admin-edit-btn"
+          style="display:none"
+          onclick="toggleAdminEdit(true)"
+          class="bg-amber-500 text-white px-8 py-2.5 rounded shadow-lg hover:bg-amber-600 transition-all font-bold uppercase tracking-wide"
+        >
+          แก้ไข
+        </button>
+        <button
+          id="admin-save-btn"
+          style="display:none"
+          onclick="toggleAdminEdit(false); alert('บันทึกแล้ว (ยังไม่เชื่อมต่อฐานข้อมูล)');"
+          class="bg-emerald-600 text-white px-8 py-2.5 rounded shadow-lg hover:bg-emerald-700 transition-all font-bold uppercase tracking-wide"
+        >
+          บันทึก
+        </button>
+
+        <button onclick="window.print()" class="bg-blue-700 text-white px-8 py-2.5 rounded shadow-lg hover:bg-blue-800 transition-all font-bold uppercase tracking-wide">
+            พิมพ์ / บันทึก PDF
+        </button>
+        <button onclick="window.location.reload()" class="bg-gray-500 text-white px-8 py-2.5 rounded shadow-lg hover:bg-gray-600 transition-all font-bold uppercase tracking-wide">
+            ล้างข้อมูลทั้งหมด
+        </button>
+    </div>
+
+    <div class="form-container">
+        <div class="main-border">
+            <!-- Header Section -->
+            <div class="flex justify-between items-start mb-2">
+                <div class="flex flex-col items-center">
+                    <div class="border-[3px] border-black px-3 py-1 italic font-black text-2xl tracking-tighter leading-none">
+                        TBKK
+                    </div>
+                </div>
+                <div class="text-center flex-grow pt-4">
+                    <h1 class="text-xl font-bold">ฟอร์มการเบิกอุปกรณ์ภายในสำนักงาน</h1>
+                    <h2 class="text-sm">( Stationary request form )</h2>
+                </div>
+                <div class="w-64 text-xs">
+                    <table class="header-info">
+                        <tr>
+                            <td class="w-24">วัน / เดือน / ปี</td>
+                            <td>: <input type="text" class="editable-line w-28" placeholder="วว/ดด/ปป"></td>
+                        </tr>
+                        <tr>
+                            <td>รหัสฝ่าย</td>
+                            <td>: <input type="text" class="editable-line w-28"></td>
+                        </tr>
+                        <tr>
+                            <td>รหัสพนักงาน</td>
+                            <td>: <input type="text" class="editable-line w-28"></td>
+                        </tr>
+                        <tr>
+                            <td>ชื่อ - นามสกุล</td>
+                            <td>: <input type="text" class="editable-line w-28"></td>
+                        </tr>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Approval Section -->
+            <div class="flex justify-end mb-4 text-[11px]">
+                <div class="border border-black p-2 w-80">
+                    <div class="text-center font-bold underline mb-4">อนุมัติโดย</div>
+                    <div class="flex flex-col gap-1">
+                        <!-- GA Section with Online Signature -->
+                        <div class="flex flex-col gap-1 mb-1">
+                            <div class="flex items-end">
+                                <span class="whitespace-nowrap">จ่ายอุปกรณ์โดย</span>
+                                <div class="signature-wrapper flex-grow ml-1">
+                                    <div class="no-print sig-controls">
+                                        <label class="sig-btn upload-btn">เลือกไฟล์<input type="file" class="hidden" onchange="handleFileSelect(event, 'sig-ga')"></label>
+                                        <span class="sig-btn clear-btn" onclick="clearSig('sig-ga')">ล้าง</span>
+                                    </div>
+                                    <canvas id="sig-ga" class="sig-canvas w-full" width="200" height="40"></canvas>
+                                </div>
+                            </div>
+                            <div class="text-center text-[10px] leading-none">( เจ้าหน้าที่แผนก GA )</div>
+                        </div>
+                        
+                        <!-- Manager Section with Signature -->
+                        <div class="signature-wrapper w-full mt-3">
+                            <div class="no-print sig-controls">
+                                <label class="sig-btn upload-btn">เลือกไฟล์<input type="file" class="hidden" onchange="handleFileSelect(event, 'sig-mgr')"></label>
+                                <span class="sig-btn clear-btn" onclick="clearSig('sig-mgr')">ล้าง</span>
+                            </div>
+                            <canvas id="sig-mgr" class="sig-canvas w-full" width="300" height="50"></canvas>
+                        </div>
+                        <div class="text-center text-[10px] leading-none">( หัวหน้าแผนกขึ้นไป )</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Main Table Section (3 Columns) -->
+            <div class="flex gap-1 overflow-hidden">
+                <div class="flex-1">
+                    <table>
+                        <thead>
+                            <tr><th class="w-10">Code</th><th>Name</th><th class="w-10">Q'ty</th></tr>
+                        </thead>
+                        <tbody id="col-1"></tbody>
+                    </table>
+                </div>
+                <div class="flex-1">
+                    <table>
+                        <thead>
+                            <tr><th class="w-10">Code</th><th>Name</th><th class="w-10">Q'ty</th></tr>
+                        </thead>
+                        <tbody id="col-2"></tbody>
+                    </table>
+                </div>
+                <div class="flex-1">
+                    <table>
+                        <thead>
+                            <tr><th class="w-10">Code</th><th>Name</th><th class="w-10">Q'ty</th></tr>
+                        </thead>
+                        <tbody id="col-3"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const data1 = [
+            ["A01", "กระดาษสีฟ้า"], ["A02", "กระดาษสีเขียว"], ["A03", "กระดาษสีชมพู"],
+            ["A04", "กระดาษสีเหลือง"], ["A05", "กระดาษ A4"], ["A06", "กระดาษ A3"],
+            ["A07", "กระดาษการ์ดขาวหน้าบาง"], ["A08", "กระดาษการ์ดขาวหน้าหนา"],
+            ["A09", "กระดาษคาร์บอน"], ["A10", "สมุดปกแข็ง"], ["A11", "สมุดปกอ่อน"],
+            ["A12", "กระดาษกาวบ่น"], ["A13", "กระดาษบันทึก"], ["B01", "แฟ้ม 125 F"],
+            ["B02", "แฟ้ม 120 F"], ["B03", "แฟ้ม No 210 F"], ["B04", "แฟ้มพลาสติก"],
+            ["B05", "แฟ้มกระดาษ"], ["B06", "แฟ้มหูรู"], ["B07", "สันแฟ้มพลาสติก"],
+            ["B08", "สันแฟ้มทองเหลือง"]
+        ];
+
+        const data2 = [
+            ["C01", "ตาไก่"], ["C02", "คลิปเบอร์ 1"], ["C03", "คลิปหนีบกระดาษ 2 ขา 108"],
+            ["C04", "คลิปหนีบกระดาษ 2 ขา 111"], ["C05", "คลิปหนีบกระดาษ 2 ขา 112"],
+            ["C06", "ลูกแม็ก No. 10"], ["C07", "ลูกแม็ก No. 35"], ["C08", "สก๊อตเทปใส เล็ก"],
+            ["C09", "สก๊อตเทปใส ใหญ่"], ["C10", "กาวรูบี้"], ["C11", "เทปผ้า"],
+            ["C12", "ถ่านไฟฉาย Size C"], ["C13", "ถ่านไฟฉาย Size D"], ["C14", "ถ่านไฟฉาย Size AAA"],
+            ["C15", "ถ่านไฟฉาย Size AA"], ["D01", "ปากกาสีดำ"], ["D02", "ปากกาสีแดง"],
+            ["D03", "ปากกาสีน้ำเงิน"], ["D04", "ปากกาเน้นข้อความ สีเหลือง"], ["D05", "ปากกาเน้นข้อความ สีเขียว"],
+            ["D06", "ปากกาเน้นข้อความ สีชมพู"]
+        ];
+
+        const data3 = [
+            ["D07", "ปากกาเน้นข้อความ สีส้ม"], ["D08", "ดินสอ"], ["D09", "ไส้ดินสอ"],
+            ["D10", "ลิควิดเปเปอร์"], ["D11", "ปากกาไวท์บอร์ด สีดำ"], ["D12", "ปากกาไวท์บอร์ด สีแดง"],
+            ["D13", "ปากกาไวท์บอร์ด สีน้ำเงิน"], ["D14", "หมึกเติมแท่นแสตมป์ สีน้ำเงิน"],
+            ["D15", "หมึกเติมแท่นแสตมป์ สีแดง"], ["D16", "หมึกเติมแท่นแสตมป์ สีดำ"],
+            ["D17", "ปากกาดำ Hybrid 0.5mm"], ["D18", "ยางลบ"], ["D19", "ซองออร์ก้า A4"],
+            ["E01", "พลาสติกเคลือบบัตร A4"], ["E02", "แท่นประทับตรา"], ["E03", "แผ่นเคลือบบัตร A3"],
+            ["E04", "คัตเตอร์"], ["E05", "ใบมีดคัตเตอร์ใหญ่"], ["E06", "ใบมีดคัตเตอร์เล็ก"],
+            ["E07", "ไม้บรรทัด"], ["E08", "แปรงลบกระดาษ"]
+        ];
+
+        function fillTable(id, data) {
+            const tbody = document.getElementById(id);
+            data.forEach(item => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td class="text-center font-bold">${item[0]}</td>
+                    <td><input type="text" class="name-input" value="${item[1]}"></td>
+                    <td><input type="text" class="qty-input"></td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function setupSignature(canvasId) {
+            const canvas = document.getElementById(canvasId);
+            const ctx = canvas.getContext('2d');
+            let isDrawing = false;
+            let lastX = 0, lastY = 0;
+
+            function draw(e) {
+                if (!isDrawing) return;
+                const rect = canvas.getBoundingClientRect();
+                let x, y;
+                if (e.type.includes('touch')) {
+                    x = (e.touches[0].clientX - rect.left) * (canvas.width / rect.width);
+                    y = (e.touches[0].clientY - rect.top) * (canvas.height / rect.height);
+                } else {
+                    x = (e.clientX - rect.left) * (canvas.width / rect.width);
+                    y = (e.clientY - rect.top) * (canvas.height / rect.height);
+                }
+                ctx.lineWidth = 1.5; ctx.lineCap = 'round'; ctx.strokeStyle = '#000';
+                ctx.beginPath(); ctx.moveTo(lastX, lastY); ctx.lineTo(x, y); ctx.stroke();
+                [lastX, lastY] = [x, y];
+            }
+
+            canvas.addEventListener('mousedown', (e) => {
+                isDrawing = true;
+                const rect = canvas.getBoundingClientRect();
+                lastX = (e.clientX - rect.left) * (canvas.width / rect.width);
+                lastY = (e.clientY - rect.top) * (canvas.height / rect.height);
+            });
+            canvas.addEventListener('mousemove', draw);
+            window.addEventListener('mouseup', () => isDrawing = false);
+            canvas.addEventListener('touchstart', (e) => {
+                isDrawing = true;
+                const rect = canvas.getBoundingClientRect();
+                lastX = (e.touches[0].clientX - rect.left) * (canvas.width / rect.width);
+                lastY = (e.touches[0].clientY - rect.top) * (canvas.height / rect.height);
+                e.preventDefault();
+            }, { passive: false });
+            canvas.addEventListener('touchmove', (e) => { draw(e); e.preventDefault(); }, { passive: false });
+            canvas.addEventListener('touchend', () => isDrawing = false);
+        }
+
+        function handleFileSelect(event, canvasId) {
+            const file = event.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const img = new Image();
+                img.onload = function() {
+                    const canvas = document.getElementById(canvasId);
+                    const ctx = canvas.getContext('2d');
+                    ctx.clearRect(0, 0, canvas.width, canvas.height);
+                    const ratio = Math.min(canvas.width / img.width, canvas.height / img.height);
+                    const x = (canvas.width - img.width * ratio) / 2;
+                    const y = (canvas.height - img.height * ratio) / 2;
+                    ctx.drawImage(img, x, y, img.width * ratio, img.height * ratio);
+                }
+                img.src = e.target.result;
+            }
+            reader.readAsDataURL(file);
+        }
+
+        function clearSig(canvasId) {
+            const canvas = document.getElementById(canvasId);
+            const ctx = canvas.getContext('2d');
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+        }
+
+        function setInputsEditable(canEditNames) {
+            document.querySelectorAll('input, textarea, select').forEach(el => {
+                const isQty = el.classList.contains('qty-input');
+                const isHeaderField = el.classList.contains('editable-line');
+                const isSignatureFile =
+                  el.type === 'file' && el.closest('.signature-wrapper');
+                const isNameField = el.classList.contains('name-input');
+                
+                // พนักงาน: แก้ได้เฉพาะหัวฟอร์ม, Q'ty, ลายเซ็น
+                // ADMIN + โหมดแก้ไข: เพิ่มให้แก้ Name ได้ด้วย
+                if (isQty || isHeaderField || isSignatureFile || (canEditNames && isNameField)) {
+                    el.readOnly = false;
+                    el.disabled = false;
+                    el.style.cursor = 'text';
+                } else {
+                    el.readOnly = true;
+                    el.disabled = true;
+                    el.style.cursor = 'default';
+                }
+            });
+        }
+
+        function toggleAdminEdit(editing) {
+            setInputsEditable(editing);
+        }
+
+        async function sendEquipmentRequest() {
+            const header = {
+                date: document.querySelector('.header-info input[placeholder="วว/ดด/ปป"]')?.value || '',
+                deptCode: document.querySelectorAll('.header-info input.editable-line')[1]?.value || '',
+                employeeId: document.querySelectorAll('.header-info input.editable-line')[2]?.value || '',
+                employeeName: document.querySelectorAll('.header-info input.editable-line')[3]?.value || '',
+                sentAt: new Date().toISOString(),
+            };
+
+            const qty = Array.from(document.querySelectorAll('input.qty-input')).map((el, idx) => ({
+                idx: idx + 1,
+                qty: el.value || '',
+            })).filter(x => (x.qty || '').toString().trim() !== '');
+
+            const payload = { form: 'EQUIPMENT_REQUEST', header, qty };
+            const text =
+                `ส่งคำขอ: เบิกอุปกรณ์ในสำนักงาน (TBKK)\n` +
+                `วันที่: ${header.date}\n` +
+                `รหัสฝ่าย: ${header.deptCode}\n` +
+                `รหัสพนักงาน: ${header.employeeId}\n` +
+                `ชื่อพนักงาน: ${header.employeeName}\n` +
+                `\nจำนวนที่ขอ (Q'ty):\n` +
+                `${qty.length ? qty.map(x => `- แถว ${x.idx}: ${x.qty}`).join('\n') : '-'}` +
+                `\n\n---\nข้อมูล (JSON):\n${JSON.stringify(payload, null, 2)}`;
+
+            try {
+                await navigator.clipboard.writeText(text);
+                alert('ส่งให้เรียบร้อย (คัดลอกข้อความลงคลิปบอร์ดแล้ว)');
+            } catch (e) {
+                window.prompt('คัดลอกข้อความเพื่อส่งให้หัวหน้า/ผู้เกี่ยวข้อง:', text);
+            }
+        }
+
+        window.onload = function() {
+            fillTable('col-1', data1);
+            fillTable('col-2', data2);
+            fillTable('col-3', data3);
+            setupSignature('sig-ga');
+            setupSignature('sig-mgr');
+
+            // ล็อกสิทธิ์แก้ไขตาม role จาก localStorage (ตั้งตอน login เป็น ADMIN)
+            let isAdmin = false;
+            try {
+              isAdmin = localStorage.getItem('isAdmin') === '1';
+            } catch {}
+
+            if (!isAdmin) {
+                // พนักงาน
+                setInputsEditable(false);
+            } else {
+                // ADMIN: เริ่มต้นยังไม่ให้แก้ Name จนกดปุ่ม "แก้ไข"
+                setInputsEditable(false);
+                document.getElementById('admin-edit-btn').style.display = 'inline-block';
+                document.getElementById('admin-save-btn').style.display = 'none';
+            }
+        }
+    </script>
+</body>
+</html>

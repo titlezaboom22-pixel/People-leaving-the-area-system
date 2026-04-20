@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="192" height="192" viewBox="0 0 192 192">
+  <rect width="192" height="192" rx="28" fill="#1e3a5f"/>
+  <rect x="8" y="8" width="176" height="176" rx="22" fill="#1e40af"/>
+  <!-- shield shape -->
+  <path d="M96 22 L162 50 L162 98 C162 140 135 164 96 174 C57 164 30 140 30 98 L30 50 Z" fill="#1e3a8a" stroke="#3b82f6" stroke-width="2.5"/>
+  <path d="M96 34 L150 58 L150 98 C150 132 128 152 96 161 C64 152 42 132 42 98 L42 58 Z" fill="#1d4ed8"/>
+  <!-- TBK text -->
+  <text x="96" y="108" text-anchor="middle" font-family="Arial Black, Arial, Helvetica, sans-serif" font-size="44" font-weight="900" fill="white" letter-spacing="-1">TBK</text>
+  <!-- small label -->
+  <text x="96" y="128" text-anchor="middle" font-family="Arial, Helvetica, sans-serif" font-size="13" font-weight="600" fill="#93c5fd" letter-spacing="3">SECURITY</text>
+</svg>

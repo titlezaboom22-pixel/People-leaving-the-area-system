@@ -1,0 +1,370 @@
+import {
+  collection,
+  doc,
+  addDoc,
+  updateDoc,
+  query,
+  where,
+  orderBy,
+  getDocs,
+  Timestamp,
+} from 'firebase/firestore';
+import { db, firebaseReady, appId } from './firebase';
+import {
+  DEPARTMENTS,
+  HR_DEPARTMENT,
+  SHOP_DEPARTMENT,
+  SECURITY_DEPARTMENT,
+  STEP_LABEL,
+  DEPT_ALIAS,
+  WORKFLOW_ROUTES,
+  normalizeDepartment,
+  resolveQueueDepartment,
+} from './constants';
+
+// Re-export for backward compatibility
+export { DEPARTMENTS as NOTIFY_DEPARTMENTS, HR_DEPARTMENT, SHOP_DEPARTMENT, resolveQueueDepartment };
+
+// --- localStorage keys (offline fallback) ---
+const STORAGE_KEY = 'approval_notifications_v2';
+const SESSION_KEY = 'approval_notifications_session_v2';
+const MEMORY_KEY = '__approval_notifications_memory_v2';
+
+function normalizeId(value) {
+  return (value || '').toString().trim().toUpperCase();
+}
+
+function newId() {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+// --- Firestore helpers ---
+function getCollRef() {
+  return collection(db, 'artifacts', appId, 'public', 'data', 'approval_workflows');
+}
+
+// --- localStorage fallback ---
+function readAllLocal() {
+  let items = [];
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    items = raw ? JSON.parse(raw) : [];
+  } catch {}
+  try {
+    const raw = sessionStorage.getItem(SESSION_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    if (parsed.length > items.length) items = parsed;
+  } catch {}
+  try {
+    const mem = window[MEMORY_KEY];
+    if (Array.isArray(mem) && mem.length > items.length) items = mem;
+  } catch {}
+  const map = new Map();
+  for (const item of items) {
+    if (item && item.id && !map.has(item.id)) map.set(item.id, item);
+  }
+  return Array.from(map.values());
+}
+
+function writeAllLocal(items) {
+  const safeItems = Array.isArray(items) ? items.slice(0, 2000) : [];
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(safeItems)); } catch {}
+  try { sessionStorage.setItem(SESSION_KEY, JSON.stringify(safeItems)); } catch {}
+  try { window[MEMORY_KEY] = safeItems; } catch {}
+}
+
+function copyWorkflowBase(n) {
+  return {
+    topic: n.topic,
+    sourceForm: n.sourceForm,
+    requesterId: n.requesterId,
+    requesterName: n.requesterName,
+    requestPayload: n.requestPayload,
+    chainId: n.chainId || n.id,
+    createdAt: n.createdAt,
+  };
+}
+
+function getRouteForStep(sourceForm, nextStep) {
+  const route = WORKFLOW_ROUTES[sourceForm];
+  if (!route) {
+    // Default: HR → Shop
+    return {
+      department: nextStep === 2 ? HR_DEPARTMENT : SHOP_DEPARTMENT,
+      stepLabel: nextStep === 2 ? 'หัวหน้าแผนก HR' : 'ร้านค้า / จัดซื้อ',
+    };
+  }
+  if (nextStep === 2) {
+    return {
+      department: route.step2 === 'HR' ? HR_DEPARTMENT : route.step2,
+      stepLabel: route.step2Label || STEP_LABEL[2],
+      targetType: route.step2, // COFFEE_SHOP, OT_FOOD_SHOP, HR
+    };
+  }
+  if (nextStep === 3 && route.steps >= 3) {
+    return {
+      department: route.step3 === 'SECURITY' ? SECURITY_DEPARTMENT : (route.step3 || SHOP_DEPARTMENT),
+      stepLabel: route.step3Label || STEP_LABEL[3],
+      targetType: route.step3, // SECURITY
+    };
+  }
+  return { department: SHOP_DEPARTMENT, stepLabel: STEP_LABEL[nextStep] };
+}
+
+function getMaxSteps(sourceForm) {
+  const route = WORKFLOW_ROUTES[sourceForm];
+  return route ? route.steps : 3;
+}
+
+function buildNextStep(prev, nextStep) {
+  const now = new Date().toISOString();
+  const routeInfo = getRouteForStep(prev.sourceForm, nextStep);
+  return {
+    id: newId(),
+    ...copyWorkflowBase(prev),
+    sourceForm: prev.sourceForm,
+    step: nextStep,
+    stepLabel: routeInfo.stepLabel,
+    department: routeInfo.department,
+    targetType: routeInfo.targetType || null,
+    requesterDepartment: prev.requesterDepartment,
+    status: 'pending',
+    createdAt: prev.createdAt,
+    forwardedAt: now,
+    acknowledgedAt: null,
+    approvedBy: null,
+    approvedSign: null,
+  };
+}
+
+// --- Public API ---
+
+export async function createApprovalWorkflowRequest({
+  topic,
+  requesterId = '-',
+  requesterName = '-',
+  sourceForm = '-',
+  requestPayload = null,
+  requesterDepartment = '',
+}) {
+  const now = new Date().toISOString();
+  const chainId = `wf-${newId()}`;
+  const queueDept = resolveQueueDepartment(requesterDepartment);
+  const isHrRequester = normalizeDepartment(queueDept) === normalizeDepartment(HR_DEPARTMENT);
+
+  const step = isHrRequester ? 2 : 1;
+  const department = isHrRequester ? HR_DEPARTMENT : queueDept;
+  const stepLabel = STEP_LABEL[step];
+
+  const item = {
+    id: newId(),
+    chainId,
+    step,
+    stepLabel,
+    topic,
+    sourceForm,
+    requesterId,
+    requesterName,
+    requesterDepartment: queueDept,
+    department,
+    requestPayload,
+    status: 'pending',
+    createdAt: now,
+    acknowledgedAt: null,
+    approvedBy: null,
+    approvedSign: null,
+  };
+
+  // Try Firestore first, fallback to localStorage
+  if (firebaseReady && db) {
+    try {
+      await addDoc(getCollRef(), {
+        ...item,
+        firestoreCreatedAt: Timestamp.now(),
+      });
+      // Also save locally as cache
+      const all = readAllLocal();
+      writeAllLocal([item, ...all]);
+      return item.id;
+    } catch (err) {
+      console.warn('Firestore write failed, using localStorage fallback:', err);
+    }
+  }
+
+  const all = readAllLocal();
+  writeAllLocal([item, ...all]);
+  return item.id;
+}
+
+export async function getPendingNotificationsByDepartment(department) {
+  const target = normalizeDepartment(department);
+
+  if (firebaseReady && db) {
+    try {
+      const q = query(
+        getCollRef(),
+        where('status', '==', 'pending'),
+      );
+      const snap = await getDocs(q);
+      return snap.docs
+        .map((d) => ({ ...d.data(), _docId: d.id }))
+        .filter((x) => normalizeDepartment(x.department) === target)
+        .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+    } catch (err) {
+      console.warn('Firestore read failed, using localStorage fallback:', err);
+    }
+  }
+
+  return readAllLocal()
+    .filter((x) => normalizeDepartment(x.department) === target && x.status === 'pending')
+    .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+}
+
+export async function getWorkflowSummariesForRequester(requesterId) {
+  const target = normalizeId(requesterId);
+  if (!target) return [];
+
+  let items;
+
+  if (firebaseReady && db) {
+    try {
+      const q = query(
+        getCollRef(),
+        where('requesterId', '==', target),
+      );
+      const snap = await getDocs(q);
+      items = snap.docs
+        .map((d) => ({ ...d.data(), _docId: d.id }))
+        .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+    } catch (err) {
+      console.warn('Firestore read failed, using localStorage fallback:', err);
+      items = null;
+    }
+  }
+
+  if (!items) {
+    items = readAllLocal()
+      .filter((x) => normalizeId(x.requesterId) === target)
+      .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+  }
+
+  const byChain = new Map();
+  for (const it of items) {
+    const cid = it.chainId || it.id;
+    if (!byChain.has(cid)) byChain.set(cid, []);
+    byChain.get(cid).push(it);
+  }
+
+  return Array.from(byChain.entries())
+    .map(([chainId, steps]) => {
+      const sorted = steps.sort((a, b) => (a.step || 1) - (b.step || 1));
+      const returned = sorted.find((s) => s.status === 'returned');
+      const pending = sorted.find((s) => s.status === 'pending');
+      const last = sorted[sorted.length - 1];
+      const lastStep = last?.step || 1;
+
+      let label = 'กำลังดำเนินการ';
+      if (returned) {
+        label = '⚠️ ถูกส่งกลับให้แก้ไข';
+      } else if (pending) {
+        label =
+          pending.step === 1
+            ? 'รอหัวหน้าแผนกผู้ส่งเซ็น'
+            : pending.step === 2
+              ? 'รอหัวหน้าแผนก HR เซ็น'
+              : pending.step === 3
+                ? 'รอร้านค้า/จัดซื้อรับเอกสาร'
+                : 'รออนุมัติ';
+      } else if (lastStep >= 3 && last?.status === 'approved') {
+        label = 'ครบกระบวนการ (ส่งถึงร้านค้าแล้ว)';
+      } else if (last?.status === 'approved') {
+        label = 'อนุมัติแล้ว (กำลังส่งต่อ)';
+      }
+
+      return {
+        chainId,
+        steps: sorted,
+        pending,
+        returned,
+        returnNote: returned?.returnNote || null,
+        statusLabel: label,
+        isDone: !pending && !returned && lastStep >= 3 && last?.status === 'approved',
+        isReturned: !!returned,
+      };
+    })
+    .sort((a, b) => String(b.steps[0]?.createdAt).localeCompare(String(a.steps[0]?.createdAt)));
+}
+
+export async function approveNotification(notificationId, { approvedBy = '-', approvedSign = null } = {}) {
+  const approvedAt = new Date().toISOString();
+
+  if (firebaseReady && db) {
+    try {
+      // Find the document by custom id field
+      const q = query(getCollRef(), where('id', '==', notificationId));
+      const snap = await getDocs(q);
+      if (snap.empty) {
+        console.warn('Notification not found in Firestore:', notificationId);
+        // Fall through to localStorage
+      } else {
+        const docSnap = snap.docs[0];
+        const n = docSnap.data();
+        const step = n.step || 1;
+
+        await updateDoc(doc(db, docSnap.ref.path), {
+          status: 'approved',
+          acknowledgedAt: approvedAt,
+          approvedBy,
+          approvedSign,
+        });
+
+        // Create next step if needed
+        const maxSteps = getMaxSteps(n.sourceForm);
+        if (step < maxSteps) {
+          const nextItem = buildNextStep(n, step + 1);
+          await addDoc(getCollRef(), {
+            ...nextItem,
+            firestoreCreatedAt: Timestamp.now(),
+          });
+        }
+
+        // Update local cache too
+        const all = readAllLocal();
+        const idx = all.findIndex((x) => x.id === notificationId);
+        if (idx !== -1) {
+          all[idx] = { ...all[idx], status: 'approved', acknowledgedAt: approvedAt, approvedBy, approvedSign };
+          if (step < maxSteps) {
+            all.unshift(buildNextStep(all[idx], step + 1));
+          }
+          writeAllLocal(all);
+        }
+        return;
+      }
+    } catch (err) {
+      console.warn('Firestore approve failed, using localStorage fallback:', err);
+    }
+  }
+
+  // localStorage fallback
+  const all = readAllLocal();
+  const idx = all.findIndex((n) => n.id === notificationId);
+  if (idx === -1) return;
+
+  const n = all[idx];
+  const step = n.step || 1;
+
+  all[idx] = {
+    ...n,
+    status: 'approved',
+    acknowledgedAt: approvedAt,
+    approvedBy,
+    approvedSign,
+  };
+
+  const maxStepsLocal = getMaxSteps(n.sourceForm);
+  if (step < maxStepsLocal) {
+    all.unshift(buildNextStep(all[idx], step + 1));
+  }
+
+  writeAllLocal(all);
+}

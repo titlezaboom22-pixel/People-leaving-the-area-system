@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="th">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>สั่งอาหาร - TBKK</title>
+    <script>
+      // Redirect to combined order page with food tab
+      const params = new URLSearchParams(window.location.search);
+      params.set('tab', 'food');
+      window.location.replace('/drink.html?' + params.toString());
+    </script>
+  </head>
+  <body></body>
+</html>

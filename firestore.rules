@@ -1,0 +1,13 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /artifacts/{appId}/public/data/{collection}/{document=**} {
+      // ต้อง authenticate ก่อนถึงอ่าน/เขียนได้
+      allow read: if request.auth != null;
+      allow create: if request.auth != null;
+      allow update: if request.auth != null;
+      // อนุญาตให้ลบได้ (ต้อง authenticate)
+      allow delete: if request.auth != null;
+    }
+  }
+}
