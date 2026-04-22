@@ -3,13 +3,15 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>สั่งอาหาร - TBKK</title>
-    <script>
-      // Redirect to combined order page with food tab
-      const params = new URLSearchParams(window.location.search);
-      params.set('tab', 'food');
-      window.location.replace('/drink.html?' + params.toString());
-    </script>
+    <title>สั่งอาหาร / เครื่องดื่ม - TBKK</title>
+    <meta name="theme-color" content="#2563eb" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <link rel="manifest" href="/manifest.json" />
+    <link rel="apple-touch-icon" href="/icon-192.svg" />
   </head>
-  <body></body>
+  <body class="bg-slate-100">
+    <div id="root"></div>
+    <script type="module" src="/src/food-main.jsx"></script>
+  </body>
 </html>

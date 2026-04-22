@@ -63,84 +63,153 @@ function formatVehicleDate(isoYmd) {
   return `${d}/${m}/${String(y).slice(-2)}`;
 }
 
-// === ใบขออนุญาตใช้รถ ===
+// === ใบขออนุญาตใช้รถ (ใหม่ — ตรงกับฟอร์ม section 1-6) ===
 export function printVehicleBooking(data) {
   const docNo = genDocNo('VHC');
-  const checkboxes = [
-    { label: 'ต้องการขับเอง', key: 'selfDrive' },
-    { label: 'ต้องการใช้พนักงานขับรถให้', key: 'needDriver' },
-    { label: 'ติดต่องานบริษัท', key: 'business' },
-    { label: 'ธุระส่วนตัว', key: 'personal' },
-    { label: 'บริเวณในโรงงาน', key: 'inFactory' },
-    { label: 'เคยมีผู้ร่วมเดินทาง ดังนี้', key: 'hasPassengers' },
-  ];
+  const passengers = Array.isArray(data.passengers) ? data.passengers : [];
+  const routes = Array.isArray(data.routes) && data.routes.length > 0
+    ? data.routes
+    : (data.destination ? [{ origin: '-', destination: data.destination }] : []);
 
-  const html = `<!DOCTYPE html><html lang="th"><head><meta charset="UTF-8"><title>ใบขออนุญาตใช้รถ - ${docNo}</title>${baseStyle}</head><body>
+  const purposeOptions = [
+    { code: '5.1', label: 'ติดต่องานบริษัท' },
+    { code: '5.2', label: 'ไปต่างจังหวัด' },
+    { code: '5.3', label: 'รับ-ส่งลูกค้า' },
+    { code: '5.4', label: 'บริเวณในโรงงาน' },
+    { code: '5.5', label: 'อื่นๆ' },
+  ];
+  const selectedPurposeCode = (data.purpose || '').toString().trim().slice(0, 3);
+  const purposeDetail = (data.purpose || '').toString().includes(':')
+    ? (data.purpose || '').split(':').slice(1).join(':').trim()
+    : '';
+
+  const drivingOpt = data.drivingOption || '';
+
+  const styleExtra = `
+    <style>
+      .v-head { background:linear-gradient(135deg,#4f46e5 0%,#6366f1 100%); color:#fff; padding:22px 26px; border-radius:0; }
+      .v-head h1 { font-size:22px; font-weight:900; margin:0 0 4px; color:#fff; }
+      .v-head h2 { font-size:13px; font-weight:400; margin:0; color:#e0e7ff; }
+      .v-section { margin:18px 0; padding:14px 16px; border:1px solid #e2e8f0; border-radius:10px; background:#fff; }
+      .v-section-head { display:flex; align-items:center; gap:10px; margin-bottom:12px; padding-bottom:8px; border-bottom:2px solid #eef2ff; }
+      .v-badge { width:28px; height:28px; border-radius:50%; background:#4f46e5; color:#fff; font-weight:900; display:inline-flex; align-items:center; justify-content:center; font-size:13px; }
+      .v-sec-title { font-size:15px; font-weight:800; color:#1e293b; }
+      .v-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+      .v-grid-3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px; }
+      .v-cell label { display:block; font-size:11px; font-weight:700; color:#64748b; text-transform:uppercase; margin-bottom:3px; }
+      .v-cell .val { padding:8px 10px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:6px; font-size:13px; min-height:18px; }
+      .v-route { display:flex; align-items:center; gap:10px; padding:8px 12px; background:#f8fafc; border:1px solid #e2e8f0; border-radius:6px; margin-bottom:6px; font-size:13px; }
+      .v-route .arrow { color:#6366f1; font-weight:900; }
+      .v-ptable { width:100%; border-collapse:collapse; font-size:12px; }
+      .v-ptable th, .v-ptable td { border:1px solid #e2e8f0; padding:6px 8px; }
+      .v-ptable th { background:#eef2ff; color:#3730a3; font-weight:700; text-align:center; }
+      .v-chk { display:flex; gap:14px; flex-wrap:wrap; }
+      .v-chk-item { padding:6px 12px; border:1px solid #e2e8f0; border-radius:6px; font-size:12px; background:#fff; }
+      .v-chk-item.on { background:#4f46e5; color:#fff; border-color:#4f46e5; font-weight:700; }
+      .v-sign { margin-top:20px; padding:14px; background:#f8fafc; border:1px dashed #94a3b8; border-radius:10px; text-align:center; }
+      .v-sign img { max-height:60px; max-width:200px; object-fit:contain; margin-bottom:4px; }
+      .v-sign .line { border-top:1px solid #334155; width:220px; margin:6px auto 4px; }
+      .v-sign .t { font-size:12px; color:#475569; }
+      .v-doc-wrap { max-width:780px; margin:0 auto; border:1px solid #cbd5e1; border-radius:12px; overflow:hidden; background:#fff; box-shadow:0 2px 8px rgba(15,23,42,0.06); }
+      .v-inner { padding:20px 22px; background:#fbfbfd; }
+    </style>
+  `;
+
+  const html = `<!DOCTYPE html><html lang="th"><head><meta charset="UTF-8"><title>ใบขอใช้รถ - ${docNo}</title>${baseStyle}${styleExtra}</head><body>
     <div class="btn-bar no-print">
       <button class="btn-print" onclick="window.print()">พิมพ์ / Save PDF</button>
       <button class="btn-close" onclick="window.close()">ปิด</button>
     </div>
-    <div class="doc">
-      <div class="doc-header">
-        <h1>ใบขออนุญาตใช้รถ/จองรถ เพื่อปฏิบัติงาน</h1>
-        <h2>(Vehicle Request Form)</h2>
+    <div class="v-doc-wrap">
+      <div class="v-head">
+        <h1>ใบขออนุญาตใช้รถ / จองรถ เพื่อปฏิบัติงาน</h1>
+        <h2>Vehicle Request Form — เลขที่ ${docNo} | วันที่ ${today()}</h2>
       </div>
-      <div class="doc-body">
-        <div class="field-row"><span class="label">ชื่อ-นามสกุล (Name):</span><span class="value">${data.name || '-'}</span></div>
-        <div class="field-row">
-          <span class="label">วันที่ขอใช้รถ (Date):</span><span class="value">${formatVehicleDate(data.date)}</span>
-          <span class="label" style="min-width:100px">เวลา (Time):</span><span class="value">${data.timeStart || '-'} น. ถึง ${data.timeEnd || '-'} น.</span>
-        </div>
-        <div class="field-row">
-          <span class="label">ผู้ขออนุญาต รหัส (ID):</span><span class="value">${data.requesterId || '-'}</span>
-          <span class="label" style="min-width:130px">แผนก (Department):</span><span class="value">${data.department || '-'}</span>
-        </div>
+      <div class="v-inner">
 
-        <div class="section">
-          <div class="checkbox-grid">
-            ${checkboxes.map((cb, i) => `<div class="checkbox-item"><span class="box">${i === 0 ? '✓' : ''}</span> ${i + 1}. ${cb.label}</div>`).join('')}
+        <!-- 1. ผู้ขอใช้รถ -->
+        <div class="v-section">
+          <div class="v-section-head"><span class="v-badge">1</span><span class="v-sec-title">ผู้ขอใช้รถ (Requester)</span></div>
+          <div class="v-grid-3">
+            <div class="v-cell"><label>ชื่อ-นามสกุล</label><div class="val">${data.name || '-'}</div></div>
+            <div class="v-cell"><label>รหัสพนักงาน</label><div class="val">${data.requesterId || '-'}</div></div>
+            <div class="v-cell"><label>แผนก</label><div class="val">${data.department || '-'}</div></div>
           </div>
         </div>
 
-        <div class="section">
-          <div class="section-title">วัตถุประสงค์ในการใช้รถ (ให้ระบุรายละเอียดเพื่อให้ทราบเหตุผล)</div>
-          <div style="min-height:40px; padding:8px; border:1px solid #ddd; border-radius:4px; font-size:14px;">${data.purpose || data.destination || '-'}</div>
-        </div>
-
-        <div class="section">
-          <div class="section-title">บริเวณที่ไป</div>
-          <div style="min-height:40px; padding:8px; border:1px solid #ddd; border-radius:4px; font-size:14px;">${data.destination || '-'}</div>
-        </div>
-
-        ${data.approvedCarNo ? `<div class="field-row" style="margin-top:12px"><span class="label">ทะเบียนรถที่อนุมัติ:</span><span class="value">${data.approvedCarNo}</span></div>` : ''}
-        ${data.driver ? `<div class="field-row"><span class="label">พนักงานขับรถ:</span><span class="value">${data.driver}</span></div>` : ''}
-
-        ${(Array.isArray(data.passengers) && data.passengers.length > 0) ? `
-        <div class="section">
-          <div class="section-title">ผู้ร่วมเดินทาง (Passengers) — ${data.passengers.length} คน</div>
-          <table class="items">
-            <thead><tr><th style="width:30px">#</th><th>ชื่อ-นามสกุล</th><th>รหัสพนักงาน</th><th>แผนก</th></tr></thead>
+        <!-- 2. ผู้ร่วมเดินทาง -->
+        <div class="v-section">
+          <div class="v-section-head"><span class="v-badge">2</span><span class="v-sec-title">ผู้ร่วมเดินทาง (Passengers) — ${passengers.length} คน</span></div>
+          ${passengers.length === 0 ? `<div style="color:#94a3b8;font-size:12px;text-align:center;padding:10px;">— ไม่มีผู้ร่วมเดินทาง —</div>` : `
+          <table class="v-ptable">
+            <thead><tr><th style="width:30px">#</th><th>ชื่อ-นามสกุล</th><th style="width:130px">รหัสพนักงาน</th><th style="width:160px">แผนก</th></tr></thead>
             <tbody>
-              ${data.passengers.map((p, i) => `<tr><td style="text-align:center">${i+1}</td><td>${p.name || '-'}</td><td style="text-align:center;font-family:monospace">${p.empId || '-'}</td><td>${p.dept || '-'}</td></tr>`).join('')}
+              ${passengers.map((p, i) => `<tr><td style="text-align:center">${i+1}</td><td>${p.name || '-'}</td><td style="text-align:center;font-family:monospace">${p.empId || '-'}</td><td>${p.dept || '-'}</td></tr>`).join('')}
             </tbody>
-          </table>
+          </table>`}
+        </div>
+
+        <!-- 3. วัน-เวลา -->
+        <div class="v-section">
+          <div class="v-section-head"><span class="v-badge">3</span><span class="v-sec-title">วันและเวลา (Date & Time)</span></div>
+          <div class="v-grid-3">
+            <div class="v-cell"><label>วันที่ขอใช้รถ</label><div class="val">${formatVehicleDate(data.date)}</div></div>
+            <div class="v-cell"><label>เวลาออก</label><div class="val">${data.timeStart || '-'} น.</div></div>
+            <div class="v-cell"><label>เวลากลับ</label><div class="val">${data.timeEnd || '-'} น.</div></div>
+          </div>
+        </div>
+
+        <!-- 4. เส้นทาง -->
+        <div class="v-section">
+          <div class="v-section-head"><span class="v-badge">4</span><span class="v-sec-title">เส้นทาง (Routes)</span></div>
+          ${routes.length === 0 ? `<div style="color:#94a3b8;font-size:12px;text-align:center;padding:10px;">— ไม่ระบุเส้นทาง —</div>` : routes.map((r) => `
+            <div class="v-route">
+              <span style="color:#16a34a">🟢 ${r.origin || '-'}</span>
+              <span class="arrow">→</span>
+              <span style="color:#dc2626">🔴 ${r.destination || '-'}</span>
+            </div>`).join('')}
+        </div>
+
+        <!-- 5. วัตถุประสงค์ -->
+        <div class="v-section">
+          <div class="v-section-head"><span class="v-badge">5</span><span class="v-sec-title">วัตถุประสงค์การใช้รถ (Purpose)</span></div>
+          <div class="v-chk">
+            ${purposeOptions.map((o) => {
+              const isOn = selectedPurposeCode === o.code;
+              return `<div class="v-chk-item ${isOn ? 'on' : ''}"><b>${o.code}</b> ${o.label}</div>`;
+            }).join('')}
+          </div>
+          ${purposeDetail ? `<div style="margin-top:10px;padding:10px;background:#eef2ff;border-left:3px solid #6366f1;border-radius:6px;font-size:13px;"><b>รายละเอียด:</b> ${purposeDetail}</div>` : ''}
+        </div>
+
+        <!-- 6. ขับเอง / ใช้พนักงานขับ -->
+        <div class="v-section">
+          <div class="v-section-head"><span class="v-badge">6</span><span class="v-sec-title">การขับรถ (Driving)</span></div>
+          <div class="v-chk">
+            <div class="v-chk-item ${drivingOpt === '6.1' ? 'on' : ''}">🚗 <b>6.1</b> ต้องการขับเอง</div>
+            <div class="v-chk-item ${drivingOpt === '6.2' ? 'on' : ''}">👤 <b>6.2</b> ต้องการใช้พนักงานขับรถให้</div>
+          </div>
+        </div>
+
+        ${data.approvedCarNo ? `
+        <div class="v-section" style="background:#ecfdf5;border-color:#6ee7b7;">
+          <div class="v-section-head" style="border-color:#a7f3d0"><span class="v-badge" style="background:#059669">✓</span><span class="v-sec-title" style="color:#065f46">รถที่อนุมัติ</span></div>
+          <div class="v-grid">
+            <div class="v-cell"><label>ทะเบียนรถ</label><div class="val">${data.approvedCarNo}</div></div>
+            ${data.driver ? `<div class="v-cell"><label>พนักงานขับรถ</label><div class="val">${data.driver}</div></div>` : ''}
+          </div>
         </div>` : ''}
 
-        <div class="sign-area">
-          <div class="sign-box">
-            ${data.sigUser ? `<img src="${data.sigUser}" alt="ลายเซ็นผู้ขอ" style="max-height:55px;max-width:180px;display:block;margin:0 auto 4px;object-fit:contain" />` : ''}
-            <div class="line"></div>
-            <div class="title">ผู้ขออนุญาต (Pos)</div>
-          </div>
-          <div class="sign-box">
-            ${data.sigManager ? `<img src="${data.sigManager}" alt="ลายเซ็นหัวหน้า" style="max-height:55px;max-width:180px;display:block;margin:0 auto 4px;object-fit:contain" />` : ''}
-            <div class="line"></div>
-            <div class="title">หน.แผนก/ผู้จัดการฝ่าย<br>(Section chief/Dept manager)</div>
-          </div>
+        <!-- ลายเซ็นผู้ขอ -->
+        <div class="v-sign">
+          ${data.sigUser ? `<img src="${data.sigUser}" alt="ลายเซ็น" />` : ''}
+          <div class="line"></div>
+          <div class="t"><b>ผู้ขอใช้รถ</b> (${data.name || '-'})</div>
         </div>
+
       </div>
     </div>
-    <div class="btn-bar no-print" style="margin-top:10px; font-size:12px; color:#888;">เลขที่เอกสาร: ${docNo} | วันที่: ${today()}</div>
+    <div class="btn-bar no-print" style="margin-top:10px; font-size:12px; color:#888;">ขั้นตอน 7-10 (Manager / GM / EEE / GA) จะถูกบันทึกเมื่อผู้อนุมัติเซ็นผ่านลิงก์อีเมล</div>
   </body></html>`;
 
   openDocWindow(html);
@@ -234,13 +303,32 @@ export function printFoodOrder(data) {
   openDocWindow(html);
 }
 
-// === ใบสั่งเครื่องดื่ม + อาหาร (รวม) ===
+// === ใบสั่งเครื่องดื่ม + อาหาร (รวมตารางเดียว) ===
 export function printCombinedOrder(drinkData, foodData) {
   const docNo = genDocNo('ORD');
-  const drinkRows = (drinkData?.rows || []).filter(r => r.details);
-  const foodRows = (foodData?.rows || []).filter(r => r.details);
+  const drinkRows = (drinkData?.rows || []).filter(r => r.details).map(r => ({ ...r, _type: 'drink' }));
+  const foodRows = (foodData?.rows || []).filter(r => r.details).map(r => ({ ...r, _type: 'food' }));
+  const allRows = [...drinkRows, ...foodRows];
   const info = drinkData || foodData || {};
   const ordererSign = drinkData?.ordererSign || foodData?.ordererSign || info.ordererSign || '';
+
+  // ยอดรวม
+  const drinkTotal = typeof drinkData?.totalAmount === 'number'
+    ? drinkData.totalAmount
+    : drinkRows.reduce((s, r) => s + (r.lineTotal || 0), 0);
+  const foodTotal = typeof foodData?.totalAmount === 'number'
+    ? foodData.totalAmount
+    : foodRows.reduce((s, r) => s + (r.lineTotal || 0), 0);
+  const hasFoodUnpriced = foodRows.some(r => r.lineTotal == null);
+  const grandTotal = drinkTotal + foodTotal;
+
+  // รวมหมายเหตุ
+  const notes = [];
+  if (drinkData?.note) notes.push(`น้ำ: ${drinkData.note}`);
+  if (foodData?.note) notes.push(`ข้าว: ${foodData.note}`);
+  const combinedNote = notes.join(' | ');
+
+  const fmtMoney = (n) => n != null ? `฿${Number(n).toLocaleString()}` : '-';
 
   const html = `<!DOCTYPE html><html lang="th"><head><meta charset="UTF-8"><title>ใบสั่งเครื่องดื่มและอาหาร - ${docNo}</title>${baseStyle}</head><body>
     <div class="btn-bar no-print">
@@ -257,31 +345,40 @@ export function printCombinedOrder(drinkData, foodData) {
         <div class="field-row"><span class="label">รหัสพนักงาน:</span><span class="value">${info.employeeId || '-'}</span><span class="label" style="min-width:80px">แผนก:</span><span class="value">${info.department || '-'}</span></div>
         <div class="field-row"><span class="label">วันที่สั่ง:</span><span class="value">${info.orderDate || '-'}</span><span class="label" style="min-width:80px">เวลา:</span><span class="value">${info.orderTime || '-'}</span></div>
 
-        ${drinkRows.length > 0 ? `
+        ${allRows.length > 0 ? `
         <div class="section">
-          <p style="font-weight:bold; margin:12px 0 4px;">☕ เครื่องดื่ม</p>
+          <p style="font-weight:bold; margin:12px 0 4px;">🧾 รายการที่สั่ง</p>
           <table class="items">
-            <thead><tr><th>ลำดับ</th><th>รายการ</th><th>จำนวน</th><th>เงื่อนไข</th></tr></thead>
+            <thead>
+              <tr>
+                <th>ลำดับ</th>
+                <th>ประเภท</th>
+                <th>รายการ</th>
+                <th>เงื่อนไข</th>
+                <th>จำนวน</th>
+                <th>ราคา/หน่วย</th>
+                <th>รวม</th>
+              </tr>
+            </thead>
             <tbody>
-              ${drinkRows.map((r, i) => `<tr><td style="text-align:center">${i + 1}</td><td>${r.details || '-'}</td><td style="text-align:center">${r.count || '-'}</td><td>${r.condition || '-'}</td></tr>`).join('')}
+              ${allRows.map((r, i) => `<tr>
+                <td style="text-align:center">${i + 1}</td>
+                <td style="text-align:center">${r._type === 'drink' ? '☕ น้ำ' : '🍛 ข้าว'}</td>
+                <td>${r.details || '-'}</td>
+                <td>${r.condition || '-'}</td>
+                <td style="text-align:center">${r.count || '-'}</td>
+                <td style="text-align:right">${fmtMoney(r.unitPrice)}</td>
+                <td style="text-align:right;font-weight:bold">${fmtMoney(r.lineTotal)}</td>
+              </tr>`).join('')}
+              <tr style="background:#f7f7f7;font-weight:bold;">
+                <td colspan="6" style="text-align:right">💰 รวมทั้งหมด</td>
+                <td style="text-align:right;font-size:14px;color:#b45309">${hasFoodUnpriced && foodTotal === 0 ? `${fmtMoney(drinkTotal)} + อาหาร` : fmtMoney(grandTotal)}</td>
+              </tr>
             </tbody>
           </table>
         </div>` : ''}
 
-        ${drinkRows.length > 0 && drinkData.note ? `<div class="field-row" style="margin-top:4px"><span class="label">หมายเหตุ (น้ำ):</span><span class="value">${drinkData.note || '-'}</span></div>` : ''}
-
-        ${foodRows.length > 0 ? `
-        <div class="section">
-          <p style="font-weight:bold; margin:12px 0 4px;">🍛 อาหาร</p>
-          <table class="items">
-            <thead><tr><th>ลำดับ</th><th>รายการ</th><th>จำนวน</th><th>เงื่อนไข</th></tr></thead>
-            <tbody>
-              ${foodRows.map((r, i) => `<tr><td style="text-align:center">${i + 1}</td><td>${r.details || '-'}</td><td style="text-align:center">${r.count || '-'}</td><td>${r.condition || '-'}</td></tr>`).join('')}
-            </tbody>
-          </table>
-        </div>` : ''}
-
-        ${foodRows.length > 0 && foodData.note ? `<div class="field-row" style="margin-top:4px"><span class="label">หมายเหตุ (ข้าว):</span><span class="value">${foodData.note || '-'}</span></div>` : ''}
+        ${combinedNote ? `<div class="field-row" style="margin-top:10px"><span class="label">หมายเหตุ:</span><span class="value">${combinedNote}</span></div>` : ''}
 
         <div class="sign-area">
           <div class="sign-box">${ordererSign ? `<img src="${ordererSign}" style="width:120px;height:50px;object-fit:contain;margin:0 auto;" />` : '<div class="line"></div>'}<div class="title">ผู้สั่ง</div></div>

@@ -1,0 +1,44 @@
+# Render.com Blueprint — SOC Email Server
+# ใช้สำหรับ deploy email server ไปเป็น cloud service
+#
+# วิธีใช้:
+#   1. Push โค้ดขึ้น GitHub
+#   2. ไปที่ https://dashboard.render.com/blueprints
+#   3. กด "New Blueprint Instance" → เลือก repo นี้
+#   4. Render จะอ่านไฟล์นี้แล้วสร้าง service อัตโนมัติ
+#   5. ตั้ง env vars ตามรายการด้านล่าง (ที่มี sync: false)
+
+services:
+  - type: web
+    name: tbkk-email-server
+    runtime: node
+    plan: free
+    region: singapore   # ใกล้ไทย (ถ้า free plan ไม่รองรับ → ใช้ oregon)
+    buildCommand: npm install
+    startCommand: node server/email-server.js
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: "20"
+      # --- SMTP ---
+      - key: SMTP_HOST
+        value: smtp.office365.com
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_SECURE
+        value: "false"
+      - key: SMTP_USER
+        sync: false   # ⚠️ ใส่ใน Render dashboard: no-reply@tbkk.co.th
+      - key: SMTP_PASS
+        sync: false   # ⚠️ ใส่ใน Render dashboard: <รหัสที่ IT ให้>
+      - key: SMTP_FROM
+        value: no-reply@tbkk.co.th
+      - key: SMTP_FROM_NAME
+        value: SOC Systems - TBKK Group
+      # --- Firebase (สำหรับอ่าน SMTP config จาก Firestore) ---
+      - key: VITE_FIREBASE_PROJECT_ID
+        value: tbkk-system
+      - key: VITE_FIREBASE_API_KEY
+        sync: false   # ⚠️ ใส่ใน Render dashboard
+      - key: VITE_APP_ID
+        value: visitor-soc-001

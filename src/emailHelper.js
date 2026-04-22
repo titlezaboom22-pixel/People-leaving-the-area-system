@@ -1,6 +1,43 @@
 import { collection, query, where, getDocs } from 'firebase/firestore';
+import emailjs from '@emailjs/browser';
 import { db, firebaseReady, appId } from './firebase';
 import { normalizeDepartment } from './constants';
+
+// Backend SMTP server endpoint (optional — run `node server/email-server.js`)
+const EMAIL_API = import.meta.env.VITE_EMAIL_API || 'http://localhost:3001';
+
+async function checkEmailServer() {
+  try {
+    const res = await fetch(`${EMAIL_API}/api/health`, { signal: AbortSignal.timeout(1500) });
+    const data = await res.json();
+    return data.status === 'ok';
+  } catch {
+    return false;
+  }
+}
+
+async function sendViaBackendServer({ to, subject, html, text }) {
+  const res = await fetch(`${EMAIL_API}/api/send-email`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ to, subject, html, body: text }),
+  });
+  const data = await res.json();
+  if (!data.success) throw new Error(data.error || 'Backend email failed');
+  return data;
+}
+
+// ========== EmailJS Config ==========
+// ถ้าตั้งค่าครบ = ส่งผ่าน EmailJS (HTML, clickable, auto-send, ไม่ต้องเปิด Outlook)
+// ถ้าไม่ครบ = fallback กลับไป mailto (เปิด Outlook ให้พนักงานกด Send เอง)
+const EMAILJS_SERVICE_ID = import.meta.env.VITE_EMAILJS_SERVICE_ID || '';
+const EMAILJS_TEMPLATE_ID = import.meta.env.VITE_EMAILJS_TEMPLATE_ID || '';
+const EMAILJS_PUBLIC_KEY = import.meta.env.VITE_EMAILJS_PUBLIC_KEY || '';
+const emailjsReady = !!(EMAILJS_SERVICE_ID && EMAILJS_TEMPLATE_ID && EMAILJS_PUBLIC_KEY);
+
+if (emailjsReady) {
+  try { emailjs.init({ publicKey: EMAILJS_PUBLIC_KEY }); } catch (e) { console.warn('EmailJS init failed:', e); }
+}
 
 function formatIsoDateThaiShort(iso) {
   if (!iso || !/^\d{4}-\d{2}-\d{2}$/.test(iso)) return iso || '-';
@@ -196,19 +233,55 @@ export function buildEmailHtml(formType, data, approveUrl, requesterSign) {
 
   switch (formType) {
     case 'VEHICLE_BOOKING': {
+      const passengers = Array.isArray(data.passengers) ? data.passengers : [];
+      const routes = Array.isArray(data.routes) && data.routes.length > 0
+        ? data.routes
+        : (data.destination ? [{ origin: '-', destination: data.destination }] : []);
+      const purposeCode = (data.purpose || '').toString().trim().slice(0, 3);
+      const purposeDetail = (data.purpose || '').toString().includes(':')
+        ? (data.purpose || '').split(':').slice(1).join(':').trim()
+        : '';
+      const drivingOpt = data.drivingOption || (data.driveSelf ? '6.1' : (data.needDriver ? '6.2' : ''));
+      const purposeOpts = [
+        { code: '5.1', label: 'ติดต่องานบริษัท' },
+        { code: '5.2', label: 'ไปต่างจังหวัด' },
+        { code: '5.3', label: 'รับ-ส่งลูกค้า' },
+        { code: '5.4', label: 'บริเวณในโรงงาน' },
+        { code: '5.5', label: 'อื่นๆ' },
+      ];
+      const chip = (on, text) => `<span style="display:inline-block;padding:4px 10px;margin:2px;border:1px solid #e2e8f0;border-radius:6px;font-size:12px;background:${on ? '#4f46e5' : '#fff'};color:${on ? '#fff' : '#1e293b'};font-weight:${on ? '700' : '400'}">${text}</span>`;
+      const badge = (n, title) => `<div style="display:flex;align-items:center;gap:8px;margin:12px 0 8px"><span style="width:24px;height:24px;border-radius:50%;background:#4f46e5;color:#fff;display:inline-block;text-align:center;line-height:24px;font-weight:900;font-size:12px">${n}</span><span style="font-weight:900;color:#1e293b;font-size:14px">${title}</span></div>`;
+
       const body =
-        fld('ชื่อ-นามสกุล (Name/Nickname)', data.name) +
-        fld2('วันที่ขอใช้รถ (Date)', formatIsoDateThaiShort(data.date), 'เวลา (Time)', `${formatTimeThai(data.timeStart)} ถึง ${formatTimeThai(data.timeEnd)}`) +
-        fld2('ผู้ขออนุญาต รหัส (ID)', data.requesterId, 'แผนก (Department)', data.department) +
-        `<div style="${S.section}">` +
-        checkbox(true, '1. ต้องการขับเอง') + checkbox(false, '3. ติดต่องานบริษัท') +
-        checkbox(false, '2. ต้องการใช้พนักงานขับรถให้') + checkbox(false, '4. ธุระส่วนตัว') +
-        checkbox(false, '5. บริเวณในโรงงาน') + checkbox(false, '6. เคยมีผู้ร่วมเดินทาง ดังนี้') +
-        `</div>` +
-        `<div style="${S.section}"><div style="${S.sectionTitle}">วัตถุประสงค์ในการใช้รถ (ให้ระบุรายละเอียดเพื่อให้ทราบเหตุผล)</div><div style="padding:8px;border:1px solid #ddd;min-height:35px">${data.purpose || data.destination || '-'}</div></div>` +
-        `<div style="${S.section}"><div style="${S.sectionTitle}">บริเวณที่ไป</div><div style="padding:8px;border:1px solid #ddd;min-height:35px">${data.destination || '-'}</div></div>` +
-        (data.approvedCarNo ? fld('ทะเบียนรถที่อนุมัติ', data.approvedCarNo) : '') +
-        (data.driver ? fld('พนักงานขับรถ', data.driver) : '');
+        badge(1, 'ผู้ขอใช้รถ') +
+        fld('ชื่อ-นามสกุล', data.name) +
+        fld2('รหัสพนักงาน', data.requesterId, 'แผนก', data.department) +
+
+        badge(2, `ผู้ร่วมเดินทาง (${passengers.length} คน)`) +
+        (passengers.length === 0
+          ? `<div style="color:#94a3b8;font-size:12px;text-align:center;padding:8px">— ไม่มีผู้ร่วมเดินทาง —</div>`
+          : itemsTable(['#', 'ชื่อ-นามสกุล', 'รหัส', 'แผนก'], passengers.map((p, i) => [i + 1, p.name || '-', p.empId || '-', p.dept || '-']))) +
+
+        badge(3, 'วันและเวลา') +
+        fld('วันที่ขอใช้รถ', formatIsoDateThaiShort(data.date)) +
+        fld2('เวลาออก', formatTimeThai(data.timeStart), 'เวลากลับ', formatTimeThai(data.timeEnd)) +
+
+        badge(4, 'เส้นทาง') +
+        (routes.length === 0
+          ? `<div style="color:#94a3b8;font-size:12px;padding:8px">— ไม่ระบุ —</div>`
+          : routes.map((r) => `<div style="padding:8px 12px;background:#f8fafc;border:1px solid #e2e8f0;border-radius:6px;margin-bottom:4px;font-size:13px"><span style="color:#16a34a">🟢 ${r.origin || '-'}</span> <span style="color:#6366f1;font-weight:900">→</span> <span style="color:#dc2626">🔴 ${r.destination || '-'}</span></div>`).join('')) +
+
+        badge(5, 'วัตถุประสงค์การใช้รถ') +
+        `<div>${purposeOpts.map((o) => chip(purposeCode === o.code, `<b>${o.code}</b> ${o.label}`)).join(' ')}</div>` +
+        (purposeDetail ? `<div style="margin-top:8px;padding:8px;background:#eef2ff;border-left:3px solid #6366f1;border-radius:4px;font-size:13px"><b>รายละเอียด:</b> ${purposeDetail}</div>` : '') +
+
+        badge(6, 'การขับรถ') +
+        `<div>${chip(drivingOpt === '6.1', '🚗 <b>6.1</b> ต้องการขับเอง')} ${chip(drivingOpt === '6.2', '👤 <b>6.2</b> ต้องการใช้พนักงานขับรถให้')}</div>` +
+
+        (data.approvedCarNo
+          ? `<div style="margin-top:14px;padding:10px;background:#ecfdf5;border:1px solid #6ee7b7;border-radius:6px"><p style="margin:0;color:#065f46;font-weight:900;font-size:13px">✓ รถที่อนุมัติแล้ว</p>${fld('ทะเบียนรถ', data.approvedCarNo)}${data.driver ? fld('พนักงานขับรถ', data.driver) : ''}</div>`
+          : '');
+
       return docWrap('ใบขออนุญาตใช้รถ/จองรถ เพื่อปฏิบัติงาน', '(Vehicle Request Form)', docNo, todayStr, body, requesterSign, approveUrl);
     }
 
@@ -274,12 +347,131 @@ export function buildEmailHtml(formType, data, approveUrl, requesterSign) {
 }
 
 /**
+ * สร้าง HTML body สำหรับส่งผ่าน EmailJS — มีปุ่ม clickable + ตาราง + สวยงาม
+ */
+function buildEmailJsHtml({ formName, name, dept, rowCount, grandTotal, itemsHtml, approveUrl, dateStr, timeStr }) {
+  const totalDisplay = typeof grandTotal === 'number' ? `฿${grandTotal.toLocaleString()}` : '(รอ GA กำหนดราคา)';
+  return `
+<div style="font-family:'Segoe UI',Tahoma,sans-serif;max-width:600px;margin:0 auto;background:#f8fafc;padding:24px">
+  <div style="background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08)">
+
+    <!-- Header -->
+    <div style="background:linear-gradient(135deg,#2563eb 0%,#1e40af 100%);color:#fff;padding:24px;text-align:center">
+      <div style="font-size:36px;margin-bottom:4px">🔔</div>
+      <h1 style="margin:0;font-size:20px;font-weight:900">มีเอกสารใหม่รอเซ็นอนุมัติ</h1>
+      <p style="margin:6px 0 0;opacity:.9;font-size:13px">SOC Systems • TBKK Group</p>
+    </div>
+
+    <!-- Summary -->
+    <div style="padding:24px">
+      <div style="background:#fef3c7;border-left:4px solid #f59e0b;padding:14px 16px;border-radius:6px;margin-bottom:16px">
+        <div style="font-size:16px;font-weight:700;color:#78350f">📋 ${formName}${rowCount > 0 ? ` • ${rowCount} รายการ` : ''}</div>
+      </div>
+
+      <table style="width:100%;border-collapse:collapse;font-size:14px">
+        <tr><td style="padding:6px 0;color:#64748b;width:110px">👤 ผู้ขอ</td><td style="padding:6px 0;font-weight:600">${name}</td></tr>
+        <tr><td style="padding:6px 0;color:#64748b">🏢 แผนก</td><td style="padding:6px 0">${dept}</td></tr>
+        <tr><td style="padding:6px 0;color:#64748b">📅 ส่งเมื่อ</td><td style="padding:6px 0">${dateStr} ${timeStr} น.</td></tr>
+        <tr><td style="padding:6px 0;color:#64748b">💰 ยอดรวม</td><td style="padding:6px 0;font-weight:700;color:#b45309;font-size:16px">${totalDisplay}</td></tr>
+      </table>
+
+      ${itemsHtml || ''}
+
+      <!-- Big CTA Button -->
+      <div style="text-align:center;margin:28px 0 12px">
+        <a href="${approveUrl}" target="_blank" style="display:inline-block;background:linear-gradient(135deg,#16a34a 0%,#15803d 100%);color:#fff;padding:16px 40px;border-radius:10px;text-decoration:none;font-weight:700;font-size:16px;box-shadow:0 4px 12px rgba(22,163,74,.3)">
+          ✅ ดูเอกสาร และ เซ็นอนุมัติ
+        </a>
+      </div>
+
+      <div style="text-align:center;font-size:12px;color:#64748b;margin-top:8px">
+        ✅ ไม่ต้อง Login &nbsp;•&nbsp; 📱 เปิดจากมือถือได้ &nbsp;•&nbsp; ✍️ เซ็นลายมือบนหน้าจอ
+      </div>
+
+      <div style="margin-top:16px;padding:12px;background:#f1f5f9;border-radius:6px;font-size:11px;color:#64748b;text-align:center;word-break:break-all">
+        หรือคัดลอกลิงก์: <a href="${approveUrl}" style="color:#2563eb">${approveUrl}</a>
+      </div>
+    </div>
+
+    <!-- Footer -->
+    <div style="background:#f8fafc;padding:14px;text-align:center;font-size:11px;color:#94a3b8;border-top:1px solid #e2e8f0">
+      🏢 SOC Systems • TBKK Group — ระบบอนุมัติเอกสารออนไลน์
+    </div>
+
+  </div>
+</div>`.trim();
+}
+
+function buildItemsHtml(formType, data) {
+  const fmtPrice = (v) => v == null ? '-' : `฿${Number(v).toLocaleString()}`;
+  const cellStyle = 'border:1px solid #e2e8f0;padding:8px;font-size:13px';
+  const thStyle = 'border:1px solid #cbd5e1;padding:8px;font-size:12px;background:#f1f5f9;font-weight:700;text-align:center';
+
+  let rows = [];
+  if (formType === 'DRINK_ORDER') {
+    rows = (data.rows || []).filter(r => r.details).map(r => ({ icon: '☕', ...r }));
+  } else if (formType === 'FOOD_ORDER') {
+    rows = (data.rows || []).filter(r => r.details).map(r => ({ icon: '🍛', ...r }));
+  } else if (formType === 'DRINK_FOOD_ORDER') {
+    const drinks = (data.drinkRows || []).filter(r => r.details).map(r => ({ icon: '☕', ...r }));
+    const foods = (data.foodRows || []).filter(r => r.details).map(r => ({ icon: '🍛', ...r }));
+    rows = [...drinks, ...foods];
+  }
+  if (rows.length === 0) return '';
+
+  const rowsHtml = rows.map((r, i) => `
+    <tr>
+      <td style="${cellStyle};text-align:center;width:40px">${i + 1}</td>
+      <td style="${cellStyle};text-align:center;width:50px">${r.icon || ''}</td>
+      <td style="${cellStyle}">${r.details}</td>
+      <td style="${cellStyle};text-align:center;width:50px">${r.count || '-'}</td>
+      <td style="${cellStyle};text-align:right;width:80px">${fmtPrice(r.unitPrice)}</td>
+      <td style="${cellStyle};text-align:right;width:80px;font-weight:700">${fmtPrice(r.lineTotal)}</td>
+    </tr>`).join('');
+
+  return `
+    <div style="margin-top:20px">
+      <div style="font-weight:700;font-size:14px;margin-bottom:8px;color:#1e293b">📦 รายการที่สั่ง</div>
+      <table style="width:100%;border-collapse:collapse">
+        <thead>
+          <tr>
+            <th style="${thStyle}">#</th>
+            <th style="${thStyle}">ประเภท</th>
+            <th style="${thStyle}">รายการ</th>
+            <th style="${thStyle}">จำนวน</th>
+            <th style="${thStyle}">ราคา</th>
+            <th style="${thStyle}">รวม</th>
+          </tr>
+        </thead>
+        <tbody>${rowsHtml}</tbody>
+      </table>
+    </div>`;
+}
+
+/**
+ * ส่ง email ผ่าน EmailJS — HTML, clickable, auto-send
+ */
+async function sendViaEmailJs({ to, subject, htmlContent, approveUrl, fromName }) {
+  const templateParams = {
+    to_email: to,
+    subject,
+    html_content: htmlContent,
+    approve_url: approveUrl,
+    from_name: fromName || 'SOC Systems',
+  };
+  const res = await emailjs.send(EMAILJS_SERVICE_ID, EMAILJS_TEMPLATE_ID, templateParams);
+  return res;
+}
+
+/**
  * คัดลอก HTML เอกสารลง clipboard แล้วเปิด Outlook
+ * หรือส่งอัตโนมัติผ่าน EmailJS ถ้าตั้งค่าแล้ว
  */
 export async function copyHtmlAndOpenOutlook({ to, subject, formType, data, approveUrl, requesterSign }) {
   const formNames = {
     DRINK_ORDER: 'สั่งเครื่องดื่ม',
     FOOD_ORDER: 'สั่งอาหาร',
+    DRINK_FOOD_ORDER: 'สั่งเครื่องดื่ม + อาหาร',
     VEHICLE_BOOKING: 'ขอใช้รถ',
     OUTING_REQUEST: 'ขอออกนอกสถานที่',
     GOODS_IN_OUT: 'นำของเข้า/ออก',
@@ -289,25 +481,111 @@ export async function copyHtmlAndOpenOutlook({ to, subject, formType, data, appr
   const dept = data.department || data.dept || '-';
   const formName = formNames[formType] || 'เอกสาร';
 
-  const body =
-    `══════════════════════════════\n` +
-    `   มีเอกสาร "${formName}" รอเซ็นอนุมัติ\n` +
-    `══════════════════════════════\n\n` +
-    `ผู้ขอ: ${name}\n` +
-    `แผนก: ${dept}\n` +
-    `วันที่: ${new Date().toLocaleDateString('th-TH')}\n\n` +
-    (approveUrl
-      ? `══════════════════════════════\n` +
-        `   >>> กดที่นี่เพื่อเซ็นอนุมัติ <<<\n` +
-        `══════════════════════════════\n\n` +
-        `${approveUrl}\n\n` +
-        `(กดลิงก์ด้านบน → ดูเอกสาร → ลงลายเซ็น → อนุมัติ)\n\n`
-      : '') +
-    `──────────────────────────────\n` +
-    `SOC Systems | ระบบอนุมัติเอกสารอัตโนมัติ`;
+  // ========== สรุปแบบย่อ — รายละเอียดไปดูที่เว็บ ==========
+  let rowCount = 0;
+  let grandTotal = null;
 
-  const mailtoUrl = `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
-  window.location.href = mailtoUrl;
+  if (formType === 'DRINK_ORDER' || formType === 'FOOD_ORDER') {
+    const rows = (data.rows || []).filter(r => r.details);
+    rowCount = rows.length;
+    grandTotal = typeof data.totalAmount === 'number' ? data.totalAmount : null;
+  } else if (formType === 'DRINK_FOOD_ORDER') {
+    const drinkRows = (data.drinkRows || []).filter(r => r.details);
+    const foodRows = (data.foodRows || []).filter(r => r.details);
+    rowCount = drinkRows.length + foodRows.length;
+    const dTotal = typeof data.drinkTotalAmount === 'number' ? data.drinkTotalAmount : 0;
+    const fTotal = typeof data.foodTotalAmount === 'number' ? data.foodTotalAmount : 0;
+    grandTotal = dTotal + fTotal;
+  }
+
+  const dateStr = new Date().toLocaleDateString('th-TH', { year: 'numeric', month: 'long', day: 'numeric' });
+  const timeStr = new Date().toLocaleTimeString('th-TH', { hour: '2-digit', minute: '2-digit' });
+
+  // Build pretty HTML once — reused by backend/EmailJS/clipboard
+  const itemsHtml = buildItemsHtml(formType, data);
+  const htmlContent = buildEmailJsHtml({
+    formName, name, dept, rowCount, grandTotal, itemsHtml, approveUrl, dateStr, timeStr,
+  });
+
+  // Clean plain-text version — URL at very end, alone on line, NO emoji/char adjacent
+  // This maximizes Outlook's auto-linkify detection chance
+  const plainBody =
+    `มีเอกสารใหม่รอเซ็นอนุมัติ\r\n\r\n` +
+    `เอกสาร: ${formName}${rowCount > 0 ? ` (${rowCount} รายการ)` : ''}\r\n` +
+    `ผู้ขอ: ${name}\r\n` +
+    `แผนก: ${dept}\r\n` +
+    `ส่งเมื่อ: ${dateStr} ${timeStr} น.\r\n` +
+    (typeof grandTotal === 'number' ? `ยอดรวม: ${grandTotal.toLocaleString()} บาท\r\n` : '') +
+    `\r\n--\r\n` +
+    `SOC Systems - TBKK Group\r\n` +
+    `ระบบอนุมัติเอกสารออนไลน์\r\n` +
+    (approveUrl
+      ? `\r\nกดลิงก์ด้านล่างเพื่อเซ็นอนุมัติ (ไม่ต้อง Login)\r\n\r\n${approveUrl}`
+      : '');
+  // ↑ URL is the LAST thing, alone on its own line, with blank line before
+  // Outlook auto-linkify REQUIRES clear URL boundaries (whitespace/newline on both sides)
+
+  // ========== (1) Backend SMTP server — ส่งอัตโนมัติ HTML ปุ่มกดได้ (ดีที่สุด) ==========
+  try {
+    if (await checkEmailServer()) {
+      await sendViaBackendServer({ to, subject, html: htmlContent, text: plainBody });
+      console.log('✅ Email sent via backend SMTP server');
+      showToast({
+        title: '✅ ส่ง Email อัตโนมัติเรียบร้อย!',
+        msg: `ส่งไปที่ <b>${to}</b> แล้ว หัวหน้าจะได้ HTML email พร้อมปุ่มกดได้ทันที`,
+        color: '#16a34a',
+      });
+      return { ok: true, method: 'backend-smtp' };
+    }
+  } catch (err) {
+    console.warn('⚠️ Backend SMTP failed, trying next:', err);
+  }
+
+  // ========== (2) EmailJS — ถ้า config ครบ ส่งอัตโนมัติ HTML ปุ่มกดได้ ==========
+  if (emailjsReady && approveUrl) {
+    try {
+      await sendViaEmailJs({ to, subject, htmlContent, approveUrl, fromName: name });
+      console.log('✅ Email sent via EmailJS');
+      showToast({
+        title: '✅ ส่ง Email อัตโนมัติเรียบร้อย!',
+        msg: `ส่งผ่าน EmailJS ไปที่ <b>${to}</b> แล้ว`,
+        color: '#16a34a',
+      });
+      return { ok: true, method: 'emailjs' };
+    } catch (err) {
+      console.warn('⚠️ EmailJS failed, falling back to mailto:', err);
+    }
+  }
+
+  // ========== (3) Fallback: ไม่เปิด Outlook แล้ว — แสดง error toast + log แทน ==========
+  // เหตุผล: บน production (HTTPS) ไม่สามารถเรียก http://localhost:3001 ได้
+  //         การเปิด Outlook ทำให้ผู้ใช้สับสน (กำลังกรอกฟอร์ม → จอกระตุก + Outlook เด้งขึ้น)
+  //         ดังนั้นถ้าทุก layer ล้ม ให้แจ้ง error เงียบๆ แทน (ระบบยังเซฟเอกสารลง Firestore สำเร็จ)
+  console.error('❌ All email channels failed — SMTP + EmailJS both unavailable');
+  console.error(`   Target: ${to}`);
+  console.error(`   Subject: ${subject}`);
+  showToast({
+    title: '⚠️ เอกสารบันทึกแล้ว แต่ส่งอีเมลไม่สำเร็จ',
+    msg: `ไม่สามารถติดต่อ email server ได้ (Backend SMTP + EmailJS ล้ม)<br>เอกสารยังอยู่ในระบบ → ผู้อนุมัติเปิดหน้าเว็บได้ตรงๆ<br><br><small>ติดต่อ IT ถ้าปัญหาเกิดบ่อย</small>`,
+    color: '#dc2626',
+    duration: 8000,
+  });
+
+  return { ok: false, method: 'failed', reason: 'all-channels-failed' };
+}
+
+// Reusable toast helper
+function showToast({ title, msg, color = '#1e40af', duration = 6000 }) {
+  try {
+    const toast = document.createElement('div');
+    toast.style.cssText = `position:fixed;top:20px;right:20px;z-index:99999;background:${color};color:#fff;padding:16px 24px;border-radius:12px;box-shadow:0 8px 24px rgba(0,0,0,.25);font-family:Sarabun,sans-serif;font-size:14px;max-width:380px;line-height:1.5;transition:opacity 1s`;
+    toast.innerHTML = `
+      <div style="font-weight:900;font-size:15px;margin-bottom:6px">${title}</div>
+      <div style="font-size:13px;opacity:.95">${msg}</div>`;
+    document.body.appendChild(toast);
+    setTimeout(() => (toast.style.opacity = '0'), duration);
+    setTimeout(() => toast.remove(), duration + 1000);
+  } catch {}
 }
 
 /**

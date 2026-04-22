@@ -1,7 +1,7 @@
 // --- Shared Constants สำหรับทั้งระบบ ---
 
 export const DEPARTMENTS = [
-  'EEE (วิศวกรรมไฟฟ้า)',
+  'EEE (Employee Experience Engagement)',
   'SOC (ศูนย์ปฏิบัติการ)',
   'HR (ทรัพยากรบุคคล)',
   'IT (เทคโนโลยีสารสนเทศ)',
@@ -45,12 +45,12 @@ export const WORKFLOW_ROUTES = {
   GOODS_IN_OUT: { steps: 3, step1Label: 'Check (หัวหน้าแผนก)', step2: 'HR', step2Label: 'Approve (ผจก./HR/EEE)', step3: 'SECURITY', step3Label: 'รปภ. รับทราบ' },
   // ผู้มาติดต่อ: Prepare → Check(หัวหน้า) → Approve(HR/EEE) → รปภ.
   VISITOR: { steps: 3, step1Label: 'Check (หัวหน้าแผนก)', step2: 'HR', step2Label: 'Approve (ผจก./HR/EEE)', step3: 'SECURITY', step3Label: 'รปภ. รับทราบ' },
-  // สั่งเครื่องดื่ม: Prepare → Check(หัวหน้ารับทราบ) → GA รับออเดอร์
-  DRINK_ORDER: { steps: 2, step1Label: 'Check (หัวหน้ารับทราบ)', step2: 'GA', step2Label: 'GA รับออเดอร์', sendShopImmediately: true },
-  // สั่งอาหาร: Prepare → Check(หัวหน้ารับทราบ) → GA รับออเดอร์
-  FOOD_ORDER: { steps: 2, step1Label: 'Check (หัวหน้ารับทราบ)', step2: 'GA', step2Label: 'GA รับออเดอร์', sendShopImmediately: true },
-  // สั่งเครื่องดื่ม+อาหาร (รวมเป็นใบเดียว): Prepare → Check(หัวหน้ารับทราบ) → GA รับออเดอร์
-  DRINK_FOOD_ORDER: { steps: 2, step1Label: 'Check (หัวหน้ารับทราบ)', step2: 'GA', step2Label: 'GA รับออเดอร์', sendShopImmediately: true },
+  // สั่งเครื่องดื่ม: Prepare → GA รับออเดอร์ (ไม่ผ่านหัวหน้า)
+  DRINK_ORDER: { steps: 1, step1: 'GA', step1Label: 'GA รับออเดอร์', targetType: 'GA', sendShopImmediately: true },
+  // สั่งอาหาร: Prepare → GA รับออเดอร์ (ไม่ผ่านหัวหน้า)
+  FOOD_ORDER: { steps: 1, step1: 'GA', step1Label: 'GA รับออเดอร์', targetType: 'GA', sendShopImmediately: true },
+  // สั่งเครื่องดื่ม+อาหาร (รวมเป็นใบเดียว): Prepare → GA รับออเดอร์ (ไม่ผ่านหัวหน้า)
+  DRINK_FOOD_ORDER: { steps: 1, step1: 'GA', step1Label: 'GA รับออเดอร์', targetType: 'GA', sendShopImmediately: true },
   // เบิกอุปกรณ์: Prepare → Check(หัวหน้า) → จบ
   EQUIPMENT_REQUEST: { steps: 1, step1Label: 'Check (หัวหน้าแผนก)' },
 };

@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { collection, query, where, getDocs, doc, updateDoc, addDoc, Timestamp, onSnapshot } from 'firebase/firestore';
-import { db, firebaseReady, appId } from './firebase';
+import { signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { db, auth, firebaseReady, appId } from './firebase';
 import { HR_DEPARTMENT, SHOP_DEPARTMENT, SECURITY_DEPARTMENT, STEP_LABEL, WORKFLOW_ROUTES, SPECIAL_EMAILS } from './constants';
 import { getHeadEmail, copyHtmlAndOpenOutlook, buildApproveUrl } from './emailHelper';
 
@@ -38,8 +39,42 @@ export default function ApprovePage({ workflowId }) {
     } catch {}
   }, []);
 
+  // รอ Firebase Auth พร้อมก่อนโหลดเอกสาร — สำคัญมาก!
+  // เพราะ firestore.rules บังคับว่าต้อง auth ก่อนจึงอ่านได้
   useEffect(() => {
-    loadWorkflow();
+    if (!firebaseReady || !auth) {
+      setError('ระบบยังไม่พร้อม');
+      setLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+
+    const ensureAuthAndLoad = async () => {
+      try {
+        // ถ้ายังไม่ได้ sign-in → sign-in anonymous ก่อน
+        if (!auth.currentUser) {
+          await signInAnonymously(auth);
+        }
+      } catch (err) {
+        if (!cancelled) {
+          setError('เชื่อมต่อระบบไม่ได้: ' + err.message);
+          setLoading(false);
+        }
+        return;
+      }
+      if (!cancelled) loadWorkflow();
+    };
+
+    // listen auth state + attempt sign-in
+    const unsub = onAuthStateChanged(auth, (u) => {
+      if (u && !cancelled) {
+        loadWorkflow();
+      }
+    });
+    ensureAuthAndLoad();
+
+    return () => { cancelled = true; unsub(); };
   }, [workflowId]);
 
   const loadWorkflow = async () => {
@@ -48,6 +83,8 @@ export default function ApprovePage({ workflowId }) {
       setLoading(false);
       return;
     }
+    // กันไม่ให้โหลดซ้ำถ้าโหลดเสร็จแล้ว
+    if (item) return;
     try {
       const collRef = collection(db, 'artifacts', appId, 'public', 'data', 'approval_workflows');
       const q = query(collRef, where('id', '==', workflowId));
@@ -60,6 +97,7 @@ export default function ApprovePage({ workflowId }) {
           setError('เอกสารนี้ได้รับการอนุมัติแล้ว');
         } else {
           setItem({ ...data, _docId: snap.docs[0].id });
+          setError(''); // clear any previous error
         }
       }
     } catch (err) {
@@ -289,6 +327,8 @@ export default function ApprovePage({ workflowId }) {
             driverId: gaSelectedDriver?.id || null,
             driverName: gaSelectedDriver?.name || null,
             driverPhone: gaSelectedDriver?.phone || null,
+            driverPhoneBackup: gaSelectedDriver?.phoneBackup || null,
+            driverLicenseType: gaSelectedDriver?.licenseType || null,
             date: rp.date || '',
             timeStart: rp.timeStart || '',
             timeEnd: rp.timeEnd || '',
@@ -340,6 +380,7 @@ export default function ApprovePage({ workflowId }) {
           id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
           chainId: item.chainId,
           step: nextStep,
+          totalSteps: maxSteps,
           stepLabel: nextStepLabel || STEP_LABEL[nextStep],
           topic: item.topic,
           sourceForm: item.sourceForm,
@@ -361,25 +402,41 @@ export default function ApprovePage({ workflowId }) {
         const collRef = collection(db, 'artifacts', appId, 'public', 'data', 'approval_workflows');
         await addDoc(collRef, nextItem);
 
-        // หา email ผู้อนุมัติคนถัดไป
-        let nextEmail = null;
-        if (nextTargetType && SPECIAL_EMAILS[nextTargetType]) {
+        // หา email ผู้อนุมัติคนถัดไป — รองรับ "ส่งหลายคน"
+        let nextEmails = [];
+        if (nextTargetType === 'GA' || nextDept === 'GA') {
+          // GA: ส่งให้ทุกคนในทีม GA
+          try {
+            const gaSnap = await getDocs(
+              query(collection(db, 'artifacts', appId, 'public', 'data', 'users'),
+                where('role', '==', 'GA')),
+            );
+            nextEmails = gaSnap.docs
+              .map(d => d.data())
+              .filter(u => u.active !== false)
+              .map(u => u.email)
+              .filter(Boolean);
+          } catch (e) { console.warn('Load GA team failed:', e); }
+          if (nextEmails.length === 0 && SPECIAL_EMAILS.GA) nextEmails.push(SPECIAL_EMAILS.GA);
+        } else if (nextTargetType && SPECIAL_EMAILS[nextTargetType]) {
           // ปลายทางพิเศษ: รปภ., ร้านกาแฟ, ร้านข้าว OT
-          nextEmail = SPECIAL_EMAILS[nextTargetType];
+          nextEmails = [SPECIAL_EMAILS[nextTargetType]];
         } else {
           // หัวหน้าแผนก (HR หรืออื่นๆ)
-          nextEmail = await getHeadEmail(nextDept);
+          const email = await getHeadEmail(nextDept);
+          if (email) nextEmails = [email];
         }
 
-        if (nextEmail) {
+        if (nextEmails.length > 0) {
           const approveUrl = buildApproveUrl(nextItem.id);
-          await copyHtmlAndOpenOutlook({
-            to: nextEmail,
-            subject: `[SOC] ${item.topic} - รอ${nextStepLabel}เซ็นอนุมัติ`,
+          const subject = `[SOC] ${item.topic} - รอ${nextStepLabel}เซ็นอนุมัติ`;
+          await Promise.all(nextEmails.map(to => copyHtmlAndOpenOutlook({
+            to,
+            subject,
             formType: item.sourceForm || 'DEFAULT',
             data: item.requestPayload || {},
             approveUrl,
-          });
+          }).catch(err => console.warn('send fail', to, err))));
         }
       }
 
@@ -458,39 +515,142 @@ export default function ApprovePage({ workflowId }) {
           </div>
           <div style={{ padding: '18px 22px', fontSize: 14 }}>
             {item.sourceForm === 'VEHICLE_BOOKING' ? (<>
-              <DocField label="ชื่อ-นามสกุล (Name)" value={payload.name} />
-              <div style={{ display: 'flex', gap: 12, marginBottom: 6, flexWrap: 'wrap' }}>
-                <span style={{ fontWeight: 700, minWidth: 120, flexShrink: 0 }}>วันที่ขอใช้รถ:</span><span>{payload.date || '-'}</span>
-                <span style={{ fontWeight: 700 }}>เวลา:</span><span>{payload.timeStart || '-'} น. ถึง {payload.timeEnd || '-'} น.</span>
+              {/* 1. ผู้ขอใช้รถ */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 10 }}>
+                <span style={{ width: 24, height: 24, borderRadius: '50%', background: '#4f46e5', color: '#fff', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontWeight: 900, fontSize: 12 }}>1</span>
+                <span style={{ fontWeight: 900, color: '#1e293b', fontSize: 14 }}>ผู้ขอใช้รถ</span>
               </div>
-              <div style={{ display: 'flex', gap: 12, marginBottom: 6, flexWrap: 'wrap' }}>
-                <span style={{ fontWeight: 700, minWidth: 120, flexShrink: 0 }}>ผู้ขออนุญาต รหัส:</span><span>{payload.requesterId || item.requesterId || '-'}</span>
-                <span style={{ fontWeight: 700 }}>แผนก:</span><span>{payload.department || item.requesterDepartment || '-'}</span>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10, marginBottom: 14 }}>
+                <VCell label="ชื่อ-นามสกุล" value={payload.name} />
+                <VCell label="รหัสพนักงาน" value={payload.requesterId || item.requesterId} />
+                <VCell label="แผนก" value={payload.department || item.requesterDepartment} />
               </div>
-              {/* Checkboxes */}
-              <div style={{ marginTop: 14, paddingTop: 10, borderTop: '1px solid #ccc', display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4, fontSize: 13 }}>
-                <CheckItem checked={payload.driveSelf} label="1. ต้องการขับเอง" />
-                <CheckItem checked={payload.needDriver} label="2. ต้องการใช้พนักงานขับรถให้" />
-                <CheckItem checked={payload.companyBusiness} label="3. ติดต่องานบริษัท" />
-                <CheckItem checked={payload.personalBusiness} label="4. ธุระส่วนตัว" />
-                <CheckItem checked={payload.inFactory} label="5. บริเวณในโรงงาน" />
-                <CheckItem checked={payload.hasCompanions} label="6. เคยมีผู้ร่วมเดินทาง" />
+
+              {/* 2. ผู้ร่วมเดินทาง */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 14, marginBottom: 10, paddingTop: 12, borderTop: '1px solid #e2e8f0' }}>
+                <span style={{ width: 24, height: 24, borderRadius: '50%', background: '#4f46e5', color: '#fff', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontWeight: 900, fontSize: 12 }}>2</span>
+                <span style={{ fontWeight: 900, color: '#1e293b', fontSize: 14 }}>ผู้ร่วมเดินทาง ({(payload.passengers || []).length} คน)</span>
               </div>
-              {/* Companions */}
-              {(payload.companions || []).length > 0 && (
-                <div style={{ marginTop: 10, padding: 10, background: '#f8fafc', borderRadius: 8 }}>
-                  <span style={{ fontWeight: 700, fontSize: 13 }}>ผู้ร่วมเดินทาง:</span>
-                  <ol style={{ margin: '4px 0 0 20px', padding: 0, fontSize: 13 }}>
-                    {payload.companions.map((c, i) => <li key={i}>{c}</li>)}
-                  </ol>
+              {(payload.passengers || []).length === 0 ? (
+                <div style={{ color: '#94a3b8', fontSize: 12, textAlign: 'center', padding: 8 }}>— ไม่มีผู้ร่วมเดินทาง —</div>
+              ) : (
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12, marginBottom: 14 }}>
+                  <thead>
+                    <tr style={{ background: '#eef2ff' }}>
+                      <th style={{ border: '1px solid #e2e8f0', padding: '6px', width: 30, color: '#3730a3' }}>#</th>
+                      <th style={{ border: '1px solid #e2e8f0', padding: '6px', color: '#3730a3' }}>ชื่อ-นามสกุล</th>
+                      <th style={{ border: '1px solid #e2e8f0', padding: '6px', width: 120, color: '#3730a3' }}>รหัส</th>
+                      <th style={{ border: '1px solid #e2e8f0', padding: '6px', width: 120, color: '#3730a3' }}>แผนก</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(payload.passengers || []).map((p, i) => (
+                      <tr key={i}>
+                        <td style={{ border: '1px solid #e2e8f0', padding: '5px', textAlign: 'center' }}>{i + 1}</td>
+                        <td style={{ border: '1px solid #e2e8f0', padding: '5px' }}>{p.name || '-'}</td>
+                        <td style={{ border: '1px solid #e2e8f0', padding: '5px', textAlign: 'center', fontFamily: 'monospace' }}>{p.empId || '-'}</td>
+                        <td style={{ border: '1px solid #e2e8f0', padding: '5px' }}>{p.dept || '-'}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+
+              {/* 3. วัน-เวลา */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 14, marginBottom: 10, paddingTop: 12, borderTop: '1px solid #e2e8f0' }}>
+                <span style={{ width: 24, height: 24, borderRadius: '50%', background: '#4f46e5', color: '#fff', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontWeight: 900, fontSize: 12 }}>3</span>
+                <span style={{ fontWeight: 900, color: '#1e293b', fontSize: 14 }}>วันและเวลา</span>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 10, marginBottom: 14 }}>
+                <VCell label="วันที่ขอใช้รถ" value={payload.date} />
+                <VCell label="เวลาออก" value={payload.timeStart ? `${payload.timeStart} น.` : ''} />
+                <VCell label="เวลากลับ" value={payload.timeEnd ? `${payload.timeEnd} น.` : ''} />
+              </div>
+
+              {/* 4. เส้นทาง */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 14, marginBottom: 10, paddingTop: 12, borderTop: '1px solid #e2e8f0' }}>
+                <span style={{ width: 24, height: 24, borderRadius: '50%', background: '#4f46e5', color: '#fff', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontWeight: 900, fontSize: 12 }}>4</span>
+                <span style={{ fontWeight: 900, color: '#1e293b', fontSize: 14 }}>เส้นทาง</span>
+              </div>
+              {(() => {
+                const routes = Array.isArray(payload.routes) && payload.routes.length > 0
+                  ? payload.routes
+                  : (payload.destination ? [{ origin: '-', destination: payload.destination }] : []);
+                return routes.length === 0 ? (
+                  <div style={{ color: '#94a3b8', fontSize: 12, textAlign: 'center', padding: 8 }}>— ไม่ระบุ —</div>
+                ) : routes.map((r, i) => (
+                  <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 8, marginBottom: 6, fontSize: 13 }}>
+                    <span style={{ color: '#16a34a' }}>🟢 {r.origin || '-'}</span>
+                    <span style={{ color: '#6366f1', fontWeight: 900 }}>→</span>
+                    <span style={{ color: '#dc2626' }}>🔴 {r.destination || '-'}</span>
+                  </div>
+                ));
+              })()}
+
+              {/* 5. วัตถุประสงค์ */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 14, marginBottom: 10, paddingTop: 12, borderTop: '1px solid #e2e8f0' }}>
+                <span style={{ width: 24, height: 24, borderRadius: '50%', background: '#4f46e5', color: '#fff', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontWeight: 900, fontSize: 12 }}>5</span>
+                <span style={{ fontWeight: 900, color: '#1e293b', fontSize: 14 }}>วัตถุประสงค์การใช้รถ</span>
+              </div>
+              {(() => {
+                const opts = [
+                  { code: '5.1', label: 'ติดต่องานบริษัท' },
+                  { code: '5.2', label: 'ไปต่างจังหวัด' },
+                  { code: '5.3', label: 'รับ-ส่งลูกค้า' },
+                  { code: '5.4', label: 'บริเวณในโรงงาน' },
+                  { code: '5.5', label: 'อื่นๆ' },
+                ];
+                const selectedCode = (payload.purpose || '').toString().trim().slice(0, 3);
+                const detail = (payload.purpose || '').toString().includes(':')
+                  ? (payload.purpose || '').split(':').slice(1).join(':').trim()
+                  : '';
+                return (
+                  <>
+                    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 6 }}>
+                      {opts.map((o) => {
+                        const on = selectedCode === o.code;
+                        return (
+                          <div key={o.code} style={{ padding: '6px 12px', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 12, background: on ? '#4f46e5' : '#fff', color: on ? '#fff' : '#1e293b', fontWeight: on ? 700 : 400 }}>
+                            <b>{o.code}</b> {o.label}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {detail && (
+                      <div style={{ marginTop: 8, padding: 10, background: '#eef2ff', borderLeft: '3px solid #6366f1', borderRadius: 6, fontSize: 13 }}>
+                        <b>รายละเอียด:</b> {detail}
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
+
+              {/* 6. การขับรถ */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 14, marginBottom: 10, paddingTop: 12, borderTop: '1px solid #e2e8f0' }}>
+                <span style={{ width: 24, height: 24, borderRadius: '50%', background: '#4f46e5', color: '#fff', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontWeight: 900, fontSize: 12 }}>6</span>
+                <span style={{ fontWeight: 900, color: '#1e293b', fontSize: 14 }}>การขับรถ</span>
+              </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
+                {(() => {
+                  const opt = payload.drivingOption || (payload.driveSelf ? '6.1' : payload.needDriver ? '6.2' : '');
+                  return (
+                    <>
+                      <div style={{ padding: '6px 12px', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 12, background: opt === '6.1' ? '#4f46e5' : '#fff', color: opt === '6.1' ? '#fff' : '#1e293b', fontWeight: opt === '6.1' ? 700 : 400 }}>🚗 <b>6.1</b> ต้องการขับเอง</div>
+                      <div style={{ padding: '6px 12px', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 12, background: opt === '6.2' ? '#4f46e5' : '#fff', color: opt === '6.2' ? '#fff' : '#1e293b', fontWeight: opt === '6.2' ? 700 : 400 }}>👤 <b>6.2</b> ต้องการใช้พนักงานขับรถให้</div>
+                    </>
+                  );
+                })()}
+              </div>
+
+              {payload.approvedCarNo && (
+                <div style={{ marginTop: 14, padding: 12, background: '#ecfdf5', border: '1px solid #6ee7b7', borderRadius: 8 }}>
+                  <p style={{ margin: 0, color: '#065f46', fontWeight: 900, fontSize: 13 }}>✓ รถที่อนุมัติแล้ว</p>
+                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))', gap: 10, marginTop: 6 }}>
+                    <VCell label="ทะเบียนรถ" value={payload.approvedCarNo} />
+                    {payload.driver && <VCell label="พนักงานขับรถ" value={payload.driver} />}
+                  </div>
                 </div>
               )}
-              <div style={{ marginTop: 14, paddingTop: 10, borderTop: '1px solid #ccc' }}>
-                <DocField label="วัตถุประสงค์" value={payload.purpose || payload.destination} />
-                <DocField label="บริเวณที่ไป" value={payload.destination} />
-              </div>
-              {payload.approvedCarNo && <DocField label="ทะเบียนรถ" value={payload.approvedCarNo} />}
-              {payload.driver && <DocField label="พนักงานขับรถ" value={payload.driver} />}
             </>) : item.sourceForm === 'DRINK_ORDER' || item.sourceForm === 'FOOD_ORDER' ? (<>
               <DocField label="ผู้รับผิดชอบ" value={payload.responsiblePerson} />
               <div style={{ display: 'flex', gap: 12, marginBottom: 6, flexWrap: 'wrap' }}>
@@ -501,12 +661,56 @@ export default function ApprovePage({ workflowId }) {
                 <span style={{ fontWeight: 700, minWidth: 120, flexShrink: 0 }}>วันที่สั่ง:</span><span>{payload.orderDate || '-'}</span>
                 <span style={{ fontWeight: 700 }}>เวลา:</span><span>{payload.orderTime || '-'}</span>
               </div>
-              {(payload.rows || []).filter(r => r.details).length > 0 && (
-                <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 10, fontSize: 13 }}>
-                  <thead><tr>{['ลำดับ','รายการ','จำนวน','เงื่อนไข'].map(h => <th key={h} style={{ border: '1px solid #999', padding: '5px 8px', background: '#f5f5f5', fontWeight: 700 }}>{h}</th>)}</tr></thead>
-                  <tbody>{(payload.rows || []).filter(r => r.details).map((r, i) => <tr key={i}><td style={{ border: '1px solid #999', padding: '5px 8px', textAlign: 'center' }}>{i+1}</td><td style={{ border: '1px solid #999', padding: '5px 8px' }}>{r.details}</td><td style={{ border: '1px solid #999', padding: '5px 8px', textAlign: 'center' }}>{r.count || '-'}</td><td style={{ border: '1px solid #999', padding: '5px 8px' }}>{r.condition || '-'}</td></tr>)}</tbody>
-                </table>
-              )}
+              {(() => {
+                const rows = (payload.rows || []).filter(r => r.details);
+                if (rows.length === 0) return null;
+                const hasPrice = rows.some(r => r.unitPrice != null || r.lineTotal != null);
+                const grand = typeof payload.totalAmount === 'number' ? payload.totalAmount : rows.reduce((s, r) => s + (Number(r.lineTotal) || 0), 0);
+                const cellCenter = { border: '1px solid #999', padding: '5px 8px', textAlign: 'center' };
+                const cell = { border: '1px solid #999', padding: '5px 8px' };
+                const cellRight = { border: '1px solid #999', padding: '5px 8px', textAlign: 'right' };
+                const thStyle = { border: '1px solid #999', padding: '5px 8px', background: '#f5f5f5', fontWeight: 700 };
+                const fmtPrice = (v) => v == null ? '-' : `฿${Number(v).toLocaleString()}`;
+                return (
+                  <table style={{ width: '100%', borderCollapse: 'collapse', marginTop: 10, fontSize: 13 }}>
+                    <thead>
+                      <tr>
+                        {(hasPrice
+                          ? ['ลำดับ', 'รายการ', 'เงื่อนไข', 'จำนวน', 'ราคา/หน่วย', 'รวม']
+                          : ['ลำดับ', 'รายการ', 'จำนวน', 'เงื่อนไข']
+                        ).map(h => <th key={h} style={thStyle}>{h}</th>)}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows.map((r, i) => hasPrice ? (
+                        <tr key={i}>
+                          <td style={cellCenter}>{i + 1}</td>
+                          <td style={cell}>{r.details}</td>
+                          <td style={cell}>{r.condition || '-'}</td>
+                          <td style={cellCenter}>{r.count || '-'}</td>
+                          <td style={cellRight}>{fmtPrice(r.unitPrice)}</td>
+                          <td style={{ ...cellRight, fontWeight: 700 }}>{fmtPrice(r.lineTotal)}</td>
+                        </tr>
+                      ) : (
+                        <tr key={i}>
+                          <td style={cellCenter}>{i + 1}</td>
+                          <td style={cell}>{r.details}</td>
+                          <td style={cellCenter}>{r.count || '-'}</td>
+                          <td style={cell}>{r.condition || '-'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    {hasPrice && (
+                      <tfoot>
+                        <tr style={{ background: '#fef3c7' }}>
+                          <td colSpan={5} style={{ ...cellRight, fontWeight: 700, fontSize: 14 }}>💰 รวมทั้งหมด</td>
+                          <td style={{ ...cellRight, fontWeight: 900, fontSize: 14, color: '#b45309' }}>฿{grand.toLocaleString()}</td>
+                        </tr>
+                      </tfoot>
+                    )}
+                  </table>
+                );
+              })()}
               {payload.note && <DocField label="หมายเหตุ" value={payload.note} />}
               {payload.ordererSign && (
                 <div style={{ marginTop: 14, paddingTop: 10, borderTop: '1px solid #ccc' }}>
@@ -524,26 +728,70 @@ export default function ApprovePage({ workflowId }) {
                 <span style={{ fontWeight: 700, minWidth: 120, flexShrink: 0 }}>วันที่สั่ง:</span><span>{payload.orderDate || '-'}</span>
                 <span style={{ fontWeight: 700 }}>เวลา:</span><span>{payload.orderTime || '-'}</span>
               </div>
-              {(payload.drinkRows || []).length > 0 && (
-                <div style={{ marginTop: 12 }}>
-                  <p style={{ fontWeight: 700, margin: '0 0 4px', color: '#0f766e' }}>☕ เครื่องดื่ม</p>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                    <thead><tr>{['ลำดับ','รายการ','จำนวน','เงื่อนไข'].map(h => <th key={h} style={{ border: '1px solid #999', padding: '5px 8px', background: '#ecfdf5', fontWeight: 700 }}>{h}</th>)}</tr></thead>
-                    <tbody>{payload.drinkRows.map((r, i) => <tr key={i}><td style={{ border: '1px solid #999', padding: '5px 8px', textAlign: 'center' }}>{i+1}</td><td style={{ border: '1px solid #999', padding: '5px 8px' }}>{r.details}</td><td style={{ border: '1px solid #999', padding: '5px 8px', textAlign: 'center' }}>{r.count || '-'}</td><td style={{ border: '1px solid #999', padding: '5px 8px' }}>{r.condition || '-'}</td></tr>)}</tbody>
-                  </table>
-                  {payload.drinkNote && <div style={{ fontSize: 12, marginTop: 4 }}><b>หมายเหตุเครื่องดื่ม:</b> {payload.drinkNote}</div>}
-                </div>
-              )}
-              {(payload.foodRows || []).length > 0 && (
-                <div style={{ marginTop: 12 }}>
-                  <p style={{ fontWeight: 700, margin: '0 0 4px', color: '#b45309' }}>🍚 อาหาร</p>
-                  <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                    <thead><tr>{['ลำดับ','รายการ','จำนวน','เงื่อนไข'].map(h => <th key={h} style={{ border: '1px solid #999', padding: '5px 8px', background: '#fffbeb', fontWeight: 700 }}>{h}</th>)}</tr></thead>
-                    <tbody>{payload.foodRows.map((r, i) => <tr key={i}><td style={{ border: '1px solid #999', padding: '5px 8px', textAlign: 'center' }}>{i+1}</td><td style={{ border: '1px solid #999', padding: '5px 8px' }}>{r.details}</td><td style={{ border: '1px solid #999', padding: '5px 8px', textAlign: 'center' }}>{r.count || '-'}</td><td style={{ border: '1px solid #999', padding: '5px 8px' }}>{r.condition || '-'}</td></tr>)}</tbody>
-                  </table>
-                  {payload.foodNote && <div style={{ fontSize: 12, marginTop: 4 }}><b>หมายเหตุอาหาร:</b> {payload.foodNote}</div>}
-                </div>
-              )}
+              {(() => {
+                const drinkRows = payload.drinkRows || [];
+                const foodRows = payload.foodRows || [];
+                const hasAny = drinkRows.length > 0 || foodRows.length > 0;
+                if (!hasAny) return null;
+                const dTotal = typeof payload.drinkTotalAmount === 'number' ? payload.drinkTotalAmount : 0;
+                const fTotal = typeof payload.foodTotalAmount === 'number' ? payload.foodTotalAmount : 0;
+                const grand = dTotal + fTotal;
+                const fmtPrice = (v) => v == null ? '-' : `฿${Number(v).toLocaleString()}`;
+                const cellCenter = { border: '1px solid #999', padding: '5px 8px', textAlign: 'center' };
+                const cell = { border: '1px solid #999', padding: '5px 8px' };
+                const cellRight = { border: '1px solid #999', padding: '5px 8px', textAlign: 'right' };
+                const thStyle = { border: '1px solid #999', padding: '5px 8px', background: '#f5f5f5', fontWeight: 700, fontSize: 13 };
+                return (
+                  <div style={{ marginTop: 12 }}>
+                    <p style={{ fontWeight: 700, margin: '0 0 4px', color: '#1f2937' }}>📦 รายการที่สั่ง</p>
+                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+                      <thead>
+                        <tr>
+                          {['ลำดับ', 'ประเภท', 'รายการ', 'เงื่อนไข', 'จำนวน', 'ราคา/หน่วย', 'รวม'].map(h => (
+                            <th key={h} style={thStyle}>{h}</th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {drinkRows.map((r, i) => (
+                          <tr key={`d-${i}`}>
+                            <td style={cellCenter}>{i + 1}</td>
+                            <td style={cellCenter}>☕ น้ำ</td>
+                            <td style={cell}>{r.details}</td>
+                            <td style={cell}>{r.condition || '-'}</td>
+                            <td style={cellCenter}>{r.count || '-'}</td>
+                            <td style={cellRight}>{fmtPrice(r.unitPrice)}</td>
+                            <td style={{ ...cellRight, fontWeight: 700 }}>{fmtPrice(r.lineTotal)}</td>
+                          </tr>
+                        ))}
+                        {foodRows.map((r, i) => (
+                          <tr key={`f-${i}`}>
+                            <td style={cellCenter}>{drinkRows.length + i + 1}</td>
+                            <td style={cellCenter}>🍛 ข้าว</td>
+                            <td style={cell}>{r.details}</td>
+                            <td style={cell}>{r.condition || '-'}</td>
+                            <td style={cellCenter}>{r.count || '-'}</td>
+                            <td style={cellRight}>{fmtPrice(r.unitPrice)}</td>
+                            <td style={{ ...cellRight, fontWeight: 700 }}>{fmtPrice(r.lineTotal)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                      <tfoot>
+                        <tr style={{ background: '#fef3c7' }}>
+                          <td colSpan={6} style={{ ...cellRight, fontWeight: 700, fontSize: 14 }}>💰 รวมทั้งหมด</td>
+                          <td style={{ ...cellRight, fontWeight: 900, fontSize: 14, color: '#b45309' }}>฿{grand.toLocaleString()}</td>
+                        </tr>
+                      </tfoot>
+                    </table>
+                    {(payload.drinkNote || payload.foodNote) && (
+                      <div style={{ fontSize: 12, marginTop: 6, color: '#555' }}>
+                        {payload.drinkNote && <div><b>หมายเหตุเครื่องดื่ม:</b> {payload.drinkNote}</div>}
+                        {payload.foodNote && <div><b>หมายเหตุอาหาร:</b> {payload.foodNote}</div>}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
               {payload.ordererSign && (
                 <div style={{ marginTop: 14, paddingTop: 10, borderTop: '1px solid #ccc' }}>
                   <span style={{ fontWeight: 700, fontSize: 13 }}>ลายเซ็นผู้สั่ง:</span>
@@ -675,10 +923,10 @@ export default function ApprovePage({ workflowId }) {
                 </div>
 
                 {/* เลือกคนขับ — แสดงเฉพาะเมื่อพนักงานต้องการคนขับ */}
-                {payload.needDriver && (
+                {(payload.needDriver || payload.drivingOption === '6.2') && (
                   <div>
                     <h4 style={{ fontSize: 13, fontWeight: 800, color: '#374151', marginBottom: 8 }}>เลือกคนขับ *</h4>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: 8 }}>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(220px, 1fr))', gap: 8 }}>
                       {gaDrivers.map(d => {
                         const booked = isDriverBookedGA(d.id);
                         const selected = gaSelectedDriver?.id === d.id;
@@ -693,8 +941,11 @@ export default function ApprovePage({ workflowId }) {
                               opacity: clickable ? 1 : 0.5, transition: 'all 0.15s',
                             }}
                           >
-                            <div style={{ fontWeight: 700, fontSize: 13 }}>🧑‍✈️ {d.name}</div>
-                            <div style={{ fontSize: 12, color: '#6b7280' }}>📞 {d.phone}</div>
+                            <div style={{ fontWeight: 700, fontSize: 13 }}>🧑‍✈️ {d.name} {d.licenseType && <span style={{ fontSize: 10, padding: '1px 6px', background: '#e0e7ff', color: '#4338ca', borderRadius: 4, marginLeft: 4 }}>{d.licenseType}</span>}</div>
+                            <div style={{ fontSize: 12, color: '#6b7280', marginTop: 3 }}>📞 <b>{d.phone || '-'}</b></div>
+                            {d.phoneBackup && (
+                              <div style={{ fontSize: 11, color: '#94a3b8' }}>📱 สำรอง: {d.phoneBackup}</div>
+                            )}
                             <div style={{ fontSize: 10, fontWeight: 700, marginTop: 4, color: booked ? '#dc2626' : selected ? '#2563eb' : '#16a34a' }}>
                               {booked ? 'ไม่ว่าง' : selected ? '✓ เลือกแล้ว' : 'ว่าง'}
                             </div>
@@ -703,8 +954,10 @@ export default function ApprovePage({ workflowId }) {
                       })}
                     </div>
                     {gaSelectedDriver && (
-                      <div style={{ marginTop: 8, padding: '8px 12px', background: '#eff6ff', borderRadius: 8, fontSize: 13 }}>
-                        ✅ คนขับ: <strong>{gaSelectedDriver.name}</strong> | 📞 {gaSelectedDriver.phone}
+                      <div style={{ marginTop: 8, padding: '10px 12px', background: '#eff6ff', borderRadius: 8, fontSize: 13, lineHeight: 1.6 }}>
+                        ✅ คนขับ: <strong>{gaSelectedDriver.name}</strong>
+                        <br />📞 หลัก: <b>{gaSelectedDriver.phone || '-'}</b>
+                        {gaSelectedDriver.phoneBackup && <> &nbsp;|&nbsp; 📱 สำรอง: <b>{gaSelectedDriver.phoneBackup}</b></>}
                       </div>
                     )}
                   </div>
@@ -852,6 +1105,16 @@ function DocField({ label, value }) {
     <div style={{ marginBottom: 6, display: 'flex', flexWrap: 'wrap', gap: 4 }}>
       <span style={{ fontWeight: 700, minWidth: 120, flexShrink: 0 }}>{label}:</span>
       <span style={{ borderBottom: '1px dotted #999', flex: 1, minWidth: 0, paddingBottom: 1, wordBreak: 'break-word' }}>{value || '-'}</span>
+    </div>
+  );
+}
+
+// Vehicle new-design cell (indigo theme)
+function VCell({ label, value }) {
+  return (
+    <div>
+      <div style={{ fontSize: 10, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', marginBottom: 3, letterSpacing: 0.5 }}>{label}</div>
+      <div style={{ padding: '8px 10px', background: '#f8fafc', border: '1px solid #e2e8f0', borderRadius: 6, fontSize: 13, minHeight: 18 }}>{value || '-'}</div>
     </div>
   );
 }

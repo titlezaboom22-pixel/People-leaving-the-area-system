@@ -6,6 +6,7 @@ export default defineConfig({
   plugins: [react()],
   server: {
     port: 3000,
+    strictPort: true, // ถ้า 3000 โดนใช้อยู่ → fail เลย อย่าไปแย่งพอร์ตคนอื่น (เช่น email server 3001)
     open: true
   },
   build: {

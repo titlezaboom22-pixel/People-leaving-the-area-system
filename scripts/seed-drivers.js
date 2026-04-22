@@ -34,11 +34,14 @@ function loadEnv() {
   }
 }
 
-// TODO: เปลี่ยนเป็นข้อมูลคนขับจริง
+// ข้อมูลคนขับ — เปลี่ยนเป็นข้อมูลจริงได้ที่ Admin หรือแก้ไฟล์นี้
+// phone = เบอร์หลัก, phoneBackup = เบอร์สำรอง (เผื่อติดต่อไม่ได้)
 const drivers = [
-  { id: 'DRV001', name: 'คนขับ 1', phone: '081-xxx-xxxx', status: 'available' },
-  { id: 'DRV002', name: 'คนขับ 2', phone: '082-xxx-xxxx', status: 'available' },
-  { id: 'DRV003', name: 'คนขับ 3', phone: '083-xxx-xxxx', status: 'available' },
+  { id: 'DRV001', name: 'สมชาย ใจดี',     phone: '081-234-5678', phoneBackup: '02-111-2222', licenseType: 'ท2', status: 'available' },
+  { id: 'DRV002', name: 'สมปอง มีสุข',    phone: '082-345-6789', phoneBackup: '02-111-2233', licenseType: 'ท2', status: 'available' },
+  { id: 'DRV003', name: 'วิชัย ขยันขัน',  phone: '083-456-7890', phoneBackup: '02-111-2244', licenseType: 'ท3', status: 'available' },
+  { id: 'DRV004', name: 'ประยุทธ์ สุขสันต์', phone: '084-567-8901', phoneBackup: '02-111-2255', licenseType: 'ท2', status: 'available' },
+  { id: 'DRV005', name: 'อนุชา รักการงาน', phone: '085-678-9012', phoneBackup: '02-111-2266', licenseType: 'ท2', status: 'available' },
 ];
 
 async function main() {

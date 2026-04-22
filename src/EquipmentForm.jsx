@@ -284,7 +284,7 @@ const EquipmentFormApp = () => {
 
   const handleSave = async () => {
     if (!firebaseReady || !user) {
-      alert('Firebase ไม่พร้อมใช้งาน');
+      alert('Firebase ไม่พร้อมใช้งาน / Firebase not ready');
       return;
     }
     try {
@@ -298,14 +298,14 @@ const EquipmentFormApp = () => {
       if (formId) {
         const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'equipment_requests', formId);
         await updateDoc(docRef, dataToSave);
-        alert('บันทึกข้อมูลสำเร็จ');
+        alert('บันทึกข้อมูลสำเร็จ / Saved successfully');
       } else {
         const docRef = await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'equipment_requests'), {
           ...dataToSave,
           createdAt: Timestamp.now()
         });
         setFormId(docRef.id);
-        alert('บันทึกข้อมูลสำเร็จ');
+        alert('บันทึกข้อมูลสำเร็จ / Saved successfully');
       }
       
       // Reset editing flag after a delay to allow onSnapshot to sync
@@ -314,7 +314,7 @@ const EquipmentFormApp = () => {
       }, 500);
     } catch (error) {
       console.error('Error saving form:', error);
-      alert('เกิดข้อผิดพลาด: ' + error.message);
+      alert('เกิดข้อผิดพลาด / Error: ' + error.message);
       isEditingRef.current = false;
     }
   };
@@ -442,25 +442,25 @@ const EquipmentFormApp = () => {
           onClick={handleBack}
           className="flex items-center gap-2 bg-gray-500 text-white px-8 py-2.5 rounded shadow-lg hover:bg-gray-600 transition-all font-bold uppercase tracking-wide"
         >
-          <ArrowLeft size={16} /> กลับหน้าหลัก
+          <ArrowLeft size={16} /> กลับหน้าหลัก / Back
         </button>
         <button
           onClick={handleSave}
           className="flex items-center gap-2 bg-emerald-600 text-white px-8 py-2.5 rounded shadow-lg hover:bg-emerald-700 transition-all font-bold uppercase tracking-wide"
         >
-          <Save size={18} /> บันทึกข้อมูล
+          <Save size={18} /> บันทึกข้อมูล / Save
         </button>
         <button
           onClick={handlePrint}
           className="flex items-center gap-2 bg-blue-700 text-white px-8 py-2.5 rounded shadow-lg hover:bg-blue-800 transition-all font-bold uppercase tracking-wide"
         >
-          <Printer size={18} /> พิมพ์ / บันทึก PDF
+          <Printer size={18} /> พิมพ์ / Print PDF
         </button>
         <button
           onClick={handleReset}
           className="bg-gray-500 text-white px-8 py-2.5 rounded shadow-lg hover:bg-gray-600 transition-all font-bold uppercase tracking-wide"
         >
-          ล้างข้อมูลทั้งหมด
+          ล้างข้อมูลทั้งหมด / Clear All
         </button>
       </div>
 
@@ -475,7 +475,7 @@ const EquipmentFormApp = () => {
               </div>
             </div>
             <div className="text-center flex-grow pt-4">
-              <h1 className="text-xl font-bold">ฟอร์มการเบิกอุปกรณ์ภายในสำนักงาน</h1>
+              <h1 className="text-xl font-bold">ฟอร์มการเบิกอุปกรณ์ภายในสำนักงาน / Office Stationery Request</h1>
               <h2 className="text-sm">( Stationary request form )</h2>
             </div>
             <div className="w-64 text-xs">

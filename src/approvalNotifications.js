@@ -21,6 +21,11 @@ import {
   normalizeDepartment,
   resolveQueueDepartment,
 } from './constants';
+import {
+  notifyRequestCreated,
+  notifyStepApproved,
+  notifyWorkflowCompleted,
+} from './notifyEmail';
 
 // Re-export for backward compatibility
 export { DEPARTMENTS as NOTIFY_DEPARTMENTS, HR_DEPARTMENT, SHOP_DEPARTMENT, resolveQueueDepartment };
@@ -146,15 +151,34 @@ export async function createApprovalWorkflowRequest({
   sourceForm = '-',
   requestPayload = null,
   requesterDepartment = '',
+  targetUserId = null,
+  targetUserEmail = null,
+  targetUserName = null,
 }) {
   const now = new Date().toISOString();
   const chainId = `wf-${newId()}`;
   const queueDept = resolveQueueDepartment(requesterDepartment);
   const isHrRequester = normalizeDepartment(queueDept) === normalizeDepartment(HR_DEPARTMENT);
 
-  const step = isHrRequester ? 2 : 1;
-  const department = isHrRequester ? HR_DEPARTMENT : queueDept;
-  const stepLabel = STEP_LABEL[step];
+  // สั่งเครื่องดื่ม/อาหาร → ส่งให้ GA โดยตรง ไม่ผ่านหัวหน้า
+  const route = WORKFLOW_ROUTES[sourceForm];
+  const isDirectToGA = route && route.targetType === 'GA' && route.steps === 1;
+
+  let step;
+  let department;
+  let stepLabel;
+  let targetType = null;
+
+  if (isDirectToGA) {
+    step = 1;
+    department = 'GA';
+    stepLabel = route.step1Label || 'GA รับออเดอร์';
+    targetType = 'GA';
+  } else {
+    step = isHrRequester ? 2 : 1;
+    department = isHrRequester ? HR_DEPARTMENT : queueDept;
+    stepLabel = STEP_LABEL[step];
+  }
 
   const item = {
     id: newId(),
@@ -167,6 +191,11 @@ export async function createApprovalWorkflowRequest({
     requesterName,
     requesterDepartment: queueDept,
     department,
+    targetType,
+    targetUserId: targetUserId || null,
+    targetUserEmail: targetUserEmail || null,
+    targetUserName: targetUserName || null,
+    totalSteps: getMaxSteps(sourceForm),
     requestPayload,
     status: 'pending',
     createdAt: now,
@@ -185,6 +214,8 @@ export async function createApprovalWorkflowRequest({
       // Also save locally as cache
       const all = readAllLocal();
       writeAllLocal([item, ...all]);
+      // fire-and-forget email notification
+      try { notifyRequestCreated(item); } catch {}
       return item.id;
     } catch (err) {
       console.warn('Firestore write failed, using localStorage fallback:', err);
@@ -193,6 +224,7 @@ export async function createApprovalWorkflowRequest({
 
   const all = readAllLocal();
   writeAllLocal([item, ...all]);
+  try { notifyRequestCreated(item); } catch {}
   return item.id;
 }
 
@@ -262,21 +294,45 @@ export async function getWorkflowSummariesForRequester(requesterId) {
       const pending = sorted.find((s) => s.status === 'pending');
       const last = sorted[sorted.length - 1];
       const lastStep = last?.step || 1;
+      const sourceForm = sorted[0]?.sourceForm;
+      const route = WORKFLOW_ROUTES[sourceForm];
+      const maxSteps = route?.steps || 3;
 
       let label = 'กำลังดำเนินการ';
+      const isGaDirect = last?.targetType === 'GA' || pending?.targetType === 'GA';
+      const isVehicleBooking = sourceForm === 'VEHICLE_BOOKING';
       if (returned) {
         label = '⚠️ ถูกส่งกลับให้แก้ไข';
       } else if (pending) {
-        label =
-          pending.step === 1
-            ? 'รอหัวหน้าแผนกผู้ส่งเซ็น'
-            : pending.step === 2
-              ? 'รอหัวหน้าแผนก HR เซ็น'
-              : pending.step === 3
-                ? 'รอร้านค้า/จัดซื้อรับเอกสาร'
-                : 'รออนุมัติ';
-      } else if (lastStep >= 3 && last?.status === 'approved') {
-        label = 'ครบกระบวนการ (ส่งถึงร้านค้าแล้ว)';
+        if (isVehicleBooking && pending.targetType === 'GA') {
+          label = 'รอ GA จัดรถ';
+        } else if (isVehicleBooking && pending.step === 1) {
+          label = 'รอหัวหน้าแผนกเซ็น';
+        } else if (isGaDirect) {
+          label = 'รอ GA รับออเดอร์';
+        } else {
+          label =
+            pending.step === 1
+              ? 'รอหัวหน้าแผนกผู้ส่งเซ็น'
+              : pending.step === 2
+                ? 'รอหัวหน้าแผนก HR เซ็น'
+                : pending.step === 3
+                  ? 'รอร้านค้า/จัดซื้อรับเอกสาร'
+                  : 'รออนุมัติ';
+        }
+      } else if (isVehicleBooking && lastStep >= maxSteps && last?.status === 'approved') {
+        // VEHICLE_BOOKING: step 2 = GA → เสร็จสมบูรณ์
+        if (last.vehicleResult === 'no_vehicle') {
+          label = '✅ GA แจ้ง: ไม่มีรถให้ใช้งาน';
+        } else if (last.vehicleResult === 'assigned') {
+          label = '✅ GA จัดรถให้แล้ว';
+        } else {
+          label = '✅ อนุมัติครบแล้ว';
+        }
+      } else if (isGaDirect && last?.status === 'approved') {
+        label = '✅ GA รับออเดอร์แล้ว';
+      } else if (lastStep >= maxSteps && last?.status === 'approved') {
+        label = '✅ ครบกระบวนการแล้ว';
       } else if (last?.status === 'approved') {
         label = 'อนุมัติแล้ว (กำลังส่งต่อ)';
       }
@@ -288,7 +344,7 @@ export async function getWorkflowSummariesForRequester(requesterId) {
         returned,
         returnNote: returned?.returnNote || null,
         statusLabel: label,
-        isDone: !pending && !returned && lastStep >= 3 && last?.status === 'approved',
+        isDone: !pending && !returned && lastStep >= maxSteps && last?.status === 'approved',
         isReturned: !!returned,
       };
     })
@@ -320,8 +376,9 @@ export async function approveNotification(notificationId, { approvedBy = '-', ap
 
         // Create next step if needed
         const maxSteps = getMaxSteps(n.sourceForm);
+        let nextItem = null;
         if (step < maxSteps) {
-          const nextItem = buildNextStep(n, step + 1);
+          nextItem = buildNextStep(n, step + 1);
           await addDoc(getCollRef(), {
             ...nextItem,
             firestoreCreatedAt: Timestamp.now(),
@@ -333,11 +390,20 @@ export async function approveNotification(notificationId, { approvedBy = '-', ap
         const idx = all.findIndex((x) => x.id === notificationId);
         if (idx !== -1) {
           all[idx] = { ...all[idx], status: 'approved', acknowledgedAt: approvedAt, approvedBy, approvedSign };
-          if (step < maxSteps) {
-            all.unshift(buildNextStep(all[idx], step + 1));
-          }
+          if (nextItem) all.unshift(nextItem);
           writeAllLocal(all);
         }
+
+        // Fire-and-forget email notifications
+        const approvedItem = { ...n, status: 'approved', acknowledgedAt: approvedAt, approvedBy, approvedSign };
+        try {
+          if (nextItem) {
+            notifyStepApproved(nextItem, approvedItem);
+          } else {
+            // workflow complete → แจ้งผู้ขอ
+            notifyWorkflowCompleted(approvedItem);
+          }
+        } catch {}
         return;
       }
     } catch (err) {
@@ -362,9 +428,19 @@ export async function approveNotification(notificationId, { approvedBy = '-', ap
   };
 
   const maxStepsLocal = getMaxSteps(n.sourceForm);
+  let nextLocal = null;
   if (step < maxStepsLocal) {
-    all.unshift(buildNextStep(all[idx], step + 1));
+    nextLocal = buildNextStep(all[idx], step + 1);
+    all.unshift(nextLocal);
   }
 
   writeAllLocal(all);
+
+  try {
+    if (nextLocal) {
+      notifyStepApproved(nextLocal, all[idx]);
+    } else {
+      notifyWorkflowCompleted(all[idx]);
+    }
+  } catch {}
 }

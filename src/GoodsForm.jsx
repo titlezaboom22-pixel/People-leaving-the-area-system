@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Truck, FileText, Send, Plus, Trash2, ImagePlus, X } from 'lucide-react';
 import { createApprovalWorkflowRequest } from './approvalNotifications';
 import { getHeadEmail, copyHtmlAndOpenOutlook, buildApproveUrl } from './emailHelper';
+import ApproverPicker from './ApproverPicker';
 import { printGoodsInOut } from './printDocument';
 
 function getHeadByDepartment(dept) {
@@ -214,7 +215,14 @@ const GoodsFormApp = () => {
     });
   };
 
-  const handleSend = async () => {
+  const [showApproverPicker, setShowApproverPicker] = useState(false);
+
+  const handleSend = () => {
+    setShowApproverPicker(true);
+  };
+
+  const performSend = async (picked) => {
+    setShowApproverPicker(false);
     const head = getHeadByDepartment(form.dept);
     const payload = {
       form: 'GOODS_IN_OUT',
@@ -269,6 +277,9 @@ const GoodsFormApp = () => {
         requesterName: form.carrierName || '-',
         requesterDepartment: form.dept || '',
         sourceForm: 'GOODS_IN_OUT',
+        targetUserId: picked?.id || null,
+        targetUserEmail: picked?.email || null,
+        targetUserName: picked?.displayName || null,
         requestPayload: {
           direction: form.direction,
           gate: form.gate,
@@ -296,7 +307,7 @@ const GoodsFormApp = () => {
     }
     printGoodsInOut(form);
     const approveUrl = workflowItemId ? buildApproveUrl(workflowItemId) : '';
-    const headEmail = await getHeadEmail(form.dept);
+    const headEmail = picked?.email || await getHeadEmail(form.dept);
     if (headEmail) {
       await copyHtmlAndOpenOutlook({
         to: headEmail,
@@ -306,12 +317,18 @@ const GoodsFormApp = () => {
         approveUrl,
       });
     } else {
-      alert(`ส่งเอกสารเรียบร้อย!\nปลายทาง: ${head.name}`);
+      alert(`ส่งเอกสารเรียบร้อย! / Document submitted!\nปลายทาง / To: ${head.name}`);
     }
   };
 
   return (
     <div className="min-h-screen bg-slate-100 p-4 md:p-8 font-sans text-slate-800">
+      <ApproverPicker
+        open={showApproverPicker}
+        department={form.dept}
+        onPick={performSend}
+        onClose={() => setShowApproverPicker(false)}
+      />
       <div className="max-w-5xl mx-auto mb-6 bg-white border border-slate-200 rounded-2xl shadow-sm p-4 md:p-6 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div className="flex items-center gap-3">
           <div className="bg-amber-600 text-white p-2 rounded-xl">
@@ -319,7 +336,7 @@ const GoodsFormApp = () => {
           </div>
           <div>
             <h1 className="text-lg md:text-xl font-black text-slate-900 tracking-tight">
-              แบบฟอร์มนำของเข้า / ของออก
+              แบบฟอร์มนำของเข้า / ของออก / Goods In/Out Form
             </h1>
             <p className="text-xs text-slate-400 mt-1">
               กรอกข้อมูลเพื่อแจ้ง รปภ. / ฝ่ายที่เกี่ยวข้อง — แนบรูปชิ้นงานได้ต่อรายการ
@@ -332,7 +349,7 @@ const GoodsFormApp = () => {
             onClick={handleBack}
             className="inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50 text-xs font-semibold"
           >
-            ← กลับหน้าหลัก
+            ← กลับหน้าหลัก / Back
           </button>
           {form.lines.every(l => !l.photos || l.photos.length === 0) && (
             <span className="text-[11px] text-orange-600 font-bold flex items-center gap-1">⚠️ ยังไม่ได้แนบรูปสินค้า</span>
@@ -343,7 +360,7 @@ const GoodsFormApp = () => {
             disabled={uploading}
             className="inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-black shadow-sm active:scale-95 transition disabled:opacity-60"
           >
-            <Send size={16} /> ส่งให้
+            <Send size={16} /> ส่งให้ / Send
           </button>
         </div>
       </div>
@@ -428,7 +445,7 @@ const GoodsFormApp = () => {
               className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm bg-slate-50 font-mono uppercase"
               value={form.vehiclePlate}
               onChange={(e) => setForm({ ...form, vehiclePlate: e.target.value })}
-              placeholder="เช่น กข 1234"
+              placeholder="เช่น / e.g. กข 1234"
             />
           </label>
           <label className="text-xs font-bold text-slate-500">
@@ -461,7 +478,7 @@ const GoodsFormApp = () => {
               onClick={addLine}
               className="inline-flex items-center gap-1 text-xs font-bold text-amber-700 hover:text-amber-900"
             >
-              <Plus size={14} /> เพิ่มแถว
+              <Plus size={14} /> เพิ่มแถว / Add Row
             </button>
           </div>
           <div className="space-y-4">
@@ -477,7 +494,7 @@ const GoodsFormApp = () => {
                       className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm bg-white"
                       value={line.description}
                       onChange={(e) => setLine(idx, 'description', e.target.value)}
-                      placeholder="ชื่อ/รายละเอียดสินค้า"
+                      placeholder="ชื่อ/รายละเอียดสินค้า / Item name/description"
                     />
                   </label>
                   <label className="text-[10px] font-bold text-slate-400">
@@ -497,7 +514,7 @@ const GoodsFormApp = () => {
                       className="mt-1 w-full border border-slate-200 rounded-xl px-2 py-2 text-sm bg-white"
                       value={line.unit}
                       onChange={(e) => setLine(idx, 'unit', e.target.value)}
-                      placeholder="ชิ้น, กล่อง"
+                      placeholder="ชิ้น, กล่อง / piece, box"
                     />
                   </label>
                   <button
@@ -573,20 +590,20 @@ const GoodsFormApp = () => {
         </div>
 
         <label className="text-xs font-bold text-slate-500 block">
-          หมายเหตุเพิ่มเติม
+          หมายเหตุเพิ่มเติม / Additional Notes
           <textarea
             className="mt-1 w-full border border-slate-200 rounded-2xl px-4 py-3 text-sm bg-slate-50 min-h-[88px] focus:ring-2 focus:ring-amber-200 outline-none"
             value={form.note}
             onChange={(e) => setForm({ ...form, note: e.target.value })}
-            placeholder="เช่น เวลานัดรับ, ข้อควรระวังในการตรวจ"
+            placeholder="เช่น เวลานัดรับ, ข้อควรระวังในการตรวจ / e.g. pickup time, inspection notes"
           />
         </label>
 
         {/* ลายเซ็นผู้นำของ */}
         <div className="pt-4 border-t border-slate-200">
-          <h3 className="text-sm font-black text-slate-700 mb-3">ลายเซ็นผู้นำของ (Prepare)</h3>
+          <h3 className="text-sm font-black text-slate-700 mb-3">ลายเซ็นผู้นำของ / Carrier's Signature (Prepare)</h3>
           <div className="flex gap-2 mb-2">
-            <button type="button" onClick={() => signFileRef.current?.click()} className="px-3 py-1.5 text-xs font-bold bg-purple-100 text-purple-700 rounded-lg hover:bg-purple-200">📁 อัปโหลดลายเซ็น</button>
+            <button type="button" onClick={() => signFileRef.current?.click()} className="px-3 py-1.5 text-xs font-bold bg-purple-100 text-purple-700 rounded-lg hover:bg-purple-200">📁 อัปโหลดลายเซ็น / Upload Signature</button>
             <button type="button" onClick={clearSign} className="px-3 py-1.5 text-xs font-bold bg-slate-100 text-slate-600 rounded-lg hover:bg-slate-200">ล้าง</button>
             <input ref={signFileRef} type="file" accept="image/*" className="hidden" onChange={uploadSign} />
           </div>
@@ -605,7 +622,7 @@ const GoodsFormApp = () => {
             onTouchMove={drawSign}
             onTouchEnd={endSign}
           />
-          {form.carrierSign && <p className="text-[10px] text-emerald-600 font-bold mt-1">✅ ลายเซ็นพร้อมส่ง</p>}
+          {form.carrierSign && <p className="text-[10px] text-emerald-600 font-bold mt-1">✅ ลายเซ็นพร้อมส่ง / Signature ready</p>}
         </div>
       </div>
     </div>

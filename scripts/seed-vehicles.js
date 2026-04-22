@@ -45,8 +45,8 @@ const vehicles = [
   { id: 'V004', plate: 'ผจ-2452', brand: 'MITSUBISHI', type: 'รถกระบะ', color: '-', seats: 5, status: 'available' },
   { id: 'V005', plate: 'ถย-4625', brand: 'MITSUBISHI', type: 'รถกระบะ', color: '-', seats: 5, status: 'available' },
   { id: 'V006', plate: '9กธ-4153', brand: 'MITSUBISHI Xpander', type: 'MPV', color: '-', seats: 7, status: 'available' },
-  { id: 'V007', plate: 'เมจ-3102', brand: 'TOYOTA VAN', type: 'รถตู้', color: '-', seats: 12, status: 'available' },
-  { id: 'V008', plate: 'เมจ-6388', brand: 'TOYOTA VAN', type: 'รถตู้', color: '-', seats: 12, status: 'available' },
+  { id: 'V007', plate: 'มจ-3102', brand: 'TOYOTA VAN', type: 'รถตู้', color: '-', seats: 12, status: 'available' },
+  { id: 'V008', plate: 'มจ-6388', brand: 'TOYOTA VAN', type: 'รถตู้', color: '-', seats: 12, status: 'available' },
   { id: 'V009', plate: 'ขม-3748', brand: 'ISUZU MU-X', type: 'SUV', color: '-', seats: 7, status: 'available' },
   { id: 'V010', plate: 'รอใส่ทะเบียน', brand: 'BYD EV', type: 'รถยนต์ไฟฟ้า', color: '-', seats: 5, status: 'available' },
 ];

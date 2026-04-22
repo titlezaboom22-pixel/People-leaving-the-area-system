@@ -12,12 +12,13 @@ import {
 } from 'firebase/firestore';
 import { db, firebaseReady, appId } from './firebase';
 import { WORKFLOW_ROUTES, SPECIAL_EMAILS } from './constants';
-import { LogOut, Truck, Car, User, Phone, CheckCircle, XCircle, Clock, Coffee, UtensilsCrossed, Check, Download, FileSpreadsheet, AlertTriangle, MapPin } from 'lucide-react';
+import { LogOut, Truck, Car, User, Phone, CheckCircle, XCircle, Clock, Coffee, UtensilsCrossed, Check, Download, FileSpreadsheet, AlertTriangle, MapPin, Package, FileText } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import VehicleTimeAlert from './VehicleTimeAlert';
+import { notifyWorkflowCompleted } from './notifyEmail';
 
 export default function GAView({ user, onLogout }) {
-  const [activeTab, setActiveTab] = useState('vehicle'); // 'vehicle' | 'food'
+  const [activeTab, setActiveTab] = useState('vehicle'); // 'vehicle' | 'food' | 'missing'
   const [pendingRequests, setPendingRequests] = useState([]);
   const [foodOrders, setFoodOrders] = useState([]);
   const [vehicles, setVehicles] = useState([]);
@@ -28,6 +29,10 @@ export default function GAView({ user, onLogout }) {
   const [selectedDriver, setSelectedDriver] = useState(null);
   const [noVehicle, setNoVehicle] = useState(false);
   const [processing, setProcessing] = useState(false);
+  // --- Missing goods follow-up (ส่งจาก รปภ. เมื่อของกลับไม่ครบ) ---
+  const [missingGoods, setMissingGoods] = useState([]);
+  const [selectedMissing, setSelectedMissing] = useState(null);
+  const [followupNote, setFollowupNote] = useState('');
 
   // Load all pending GA requests
   useEffect(() => {
@@ -38,7 +43,7 @@ export default function GAView({ user, onLogout }) {
       const docs = snap.docs.map(d => ({ ...d.data(), _docId: d.id }));
       docs.sort((a, b) => (b.forwardedAt || b.createdAt || '').localeCompare(a.forwardedAt || a.createdAt || ''));
       setPendingRequests(docs.filter(d => d.sourceForm === 'VEHICLE_BOOKING'));
-      setFoodOrders(docs.filter(d => d.sourceForm === 'DRINK_ORDER' || d.sourceForm === 'FOOD_ORDER'));
+      setFoodOrders(docs.filter(d => d.sourceForm === 'DRINK_ORDER' || d.sourceForm === 'FOOD_ORDER' || d.sourceForm === 'DRINK_FOOD_ORDER'));
     });
     return () => unsub();
   }, []);
@@ -69,6 +74,23 @@ export default function GAView({ user, onLogout }) {
     const ref = collection(db, 'artifacts', appId, 'public', 'data', 'vehicle_bookings');
     const unsub = onSnapshot(ref, (snap) => {
       setAllBookings(snap.docs.map(d => ({ id: d.id, ...d.data() })));
+    });
+    return () => unsub();
+  }, []);
+
+  // Load missing goods follow-ups (ของค้าง/ไม่ครบ จาก รปภ.)
+  useEffect(() => {
+    if (!firebaseReady) return;
+    const collRef = collection(db, 'artifacts', appId, 'public', 'data', 'approval_workflows');
+    const q = query(collRef, where('escalatedToGA', '==', true));
+    const unsub = onSnapshot(q, (snap) => {
+      const docs = snap.docs
+        .map(d => ({ ...d.data(), _docId: d.id }))
+        .filter(d => d.followupStatus !== 'resolved')
+        .sort((a, b) => (b.escalatedToGAAt || '').localeCompare(a.escalatedToGAAt || ''));
+      setMissingGoods(docs);
+    }, (err) => {
+      console.warn('Missing goods listener error:', err);
     });
     return () => unsub();
   }, []);
@@ -171,6 +193,17 @@ export default function GAView({ user, onLogout }) {
         ...vehicleAssignment,
       });
 
+      // แจ้งผู้ขอทางอีเมลว่า GA จัดรถให้แล้ว/ไม่มีรถ
+      try {
+        notifyWorkflowCompleted({
+          ...selectedRequest,
+          status: 'approved',
+          acknowledgedAt: now,
+          approvedBy: 'GA',
+          ...vehicleAssignment,
+        });
+      } catch {}
+
       // Save vehicle booking
       if (!noVehicle && selectedVehicle) {
         const bookingRef = collection(db, 'artifacts', appId, 'public', 'data', 'vehicle_bookings');
@@ -216,6 +249,10 @@ export default function GAView({ user, onLogout }) {
         approvedDate: approveDate,
         approvedTime: approveTime,
       });
+      // แจ้งผู้ขอทางอีเมลว่า GA รับออเดอร์แล้ว
+      try {
+        notifyWorkflowCompleted({ ...order, status: 'approved', acknowledgedAt: now, approvedBy: 'GA' });
+      } catch {}
       alert('รับออเดอร์เรียบร้อย!');
     } catch (err) {
       alert('เกิดข้อผิดพลาด: ' + err.message);
@@ -227,6 +264,48 @@ export default function GAView({ user, onLogout }) {
 
   const vehicleCount = pendingRequests.length;
   const foodCount = foodOrders.length;
+  const missingCount = missingGoods.length;
+
+  // GA: เริ่มติดตาม / resolve missing goods
+  const handleMissingStart = async (row) => {
+    if (!firebaseReady || !row?._docId) return;
+    try {
+      const ref = doc(db, 'artifacts', appId, 'public', 'data', 'approval_workflows', row._docId);
+      await updateDoc(ref, {
+        followupStatus: 'in_progress',
+        followupStartedAt: new Date().toISOString(),
+        followupHistory: [
+          ...(row.followupHistory || []),
+          { by: 'GA', action: 'start_followup', at: new Date().toISOString(), note: '' },
+        ],
+      });
+    } catch (err) {
+      alert('ไม่สำเร็จ: ' + err.message);
+    }
+  };
+
+  const handleMissingResolve = async () => {
+    if (!firebaseReady || !selectedMissing?._docId) return;
+    if (!window.confirm('ยืนยันว่าได้ติดตามของเรียบร้อย — ปิดเรื่องนี้?')) return;
+    try {
+      const ref = doc(db, 'artifacts', appId, 'public', 'data', 'approval_workflows', selectedMissing._docId);
+      await updateDoc(ref, {
+        followupStatus: 'resolved',
+        followupResolvedAt: new Date().toISOString(),
+        followupResolvedNote: followupNote || '',
+        escalatedToGA: false,
+        followupHistory: [
+          ...(selectedMissing.followupHistory || []),
+          { by: 'GA', action: 'resolve', at: new Date().toISOString(), note: followupNote || '' },
+        ],
+      });
+      setSelectedMissing(null);
+      setFollowupNote('');
+      alert('ปิดเรื่องเรียบร้อย ✓');
+    } catch (err) {
+      alert('ไม่สำเร็จ: ' + err.message);
+    }
+  };
 
   // Export vehicle bookings to Excel
   const handleExportExcel = async () => {
@@ -382,6 +461,16 @@ export default function GAView({ user, onLogout }) {
           >
             <UtensilsCrossed size={14} /> อาหาร/เครื่องดื่ม
             {foodCount > 0 && <span className={`px-1.5 py-0.5 rounded-full text-[10px] md:text-xs font-black ${activeTab === 'food' ? 'bg-white text-orange-600' : 'bg-orange-100 text-orange-700'}`}>{foodCount}</span>}
+          </button>
+
+          <button
+            onClick={() => { setActiveTab('missing'); setSelectedRequest(null); setSelectedMissing(null); }}
+            className={`flex items-center gap-1.5 px-3 md:px-5 py-2 md:py-2.5 rounded-xl font-bold text-xs md:text-sm transition-all ${
+              activeTab === 'missing' ? 'bg-red-600 text-white shadow-lg' : 'bg-white text-slate-600 border border-slate-200 hover:border-red-300'
+            } ${missingCount > 0 && activeTab !== 'missing' ? 'ring-2 ring-red-300 animate-pulse' : ''}`}
+          >
+            <Package size={14} /> ของไม่ครบ / ค้างออก
+            {missingCount > 0 && <span className={`px-1.5 py-0.5 rounded-full text-[10px] md:text-xs font-black ${activeTab === 'missing' ? 'bg-white text-red-600' : 'bg-red-100 text-red-700'}`}>{missingCount}</span>}
           </button>
 
           {/* Export Excel Button */}
@@ -712,6 +801,87 @@ export default function GAView({ user, onLogout }) {
         {/* Food/Drink Tab */}
         {activeTab === 'food' && (
           <div className="space-y-4">
+            {/* Summary: รวมยอดรอดำเนินการ (สำหรับ GA รวมเป็นบิลแผนก) */}
+            {foodOrders.length > 0 && (() => {
+              // Compute totals
+              let grandTotal = 0;
+              let grandDrink = 0;
+              let grandFood = 0;
+              let hasUnpriced = false;
+              const byDept = {};
+              for (const o of foodOrders) {
+                const p = o.requestPayload || {};
+                const isCombined = o.sourceForm === 'DRINK_FOOD_ORDER';
+                const isDrink = o.sourceForm === 'DRINK_ORDER';
+                let drinkSum = 0;
+                let foodSum = 0;
+                if (isCombined) {
+                  if (typeof p.drinkTotalAmount === 'number') drinkSum = p.drinkTotalAmount;
+                  else for (const r of (p.drinkRows || [])) {
+                    if (typeof r.lineTotal === 'number') drinkSum += r.lineTotal; else hasUnpriced = true;
+                  }
+                  if (typeof p.foodTotalAmount === 'number') foodSum = p.foodTotalAmount;
+                  else for (const r of (p.foodRows || [])) {
+                    if (typeof r.lineTotal === 'number') foodSum += r.lineTotal; else hasUnpriced = true;
+                  }
+                } else {
+                  let orderTotal = 0;
+                  if (typeof p.totalAmount === 'number') orderTotal = p.totalAmount;
+                  else for (const r of (p.rows || [])) {
+                    if (typeof r.lineTotal === 'number') orderTotal += r.lineTotal; else hasUnpriced = true;
+                  }
+                  if (p.totalAmount == null && (p.rows || []).some(r => r.lineTotal == null)) hasUnpriced = true;
+                  if (isDrink) drinkSum = orderTotal; else foodSum = orderTotal;
+                }
+                const orderTotal = drinkSum + foodSum;
+                grandTotal += orderTotal;
+                grandDrink += drinkSum;
+                grandFood += foodSum;
+                const dept = p.department || o.requesterDepartment || '-';
+                byDept[dept] = (byDept[dept] || 0) + orderTotal;
+              }
+              const topDepts = Object.entries(byDept).sort((a, b) => b[1] - a[1]);
+              return (
+                <div className="bg-gradient-to-br from-slate-800 to-slate-900 text-white rounded-2xl shadow-lg p-5">
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="font-black text-base flex items-center gap-2">
+                      📊 สรุปออเดอร์รอดำเนินการ
+                    </h3>
+                    <span className="text-xs text-slate-300">{foodOrders.length} ออเดอร์</span>
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
+                    <div className="bg-white/10 rounded-xl p-3">
+                      <p className="text-[10px] text-slate-300 uppercase font-bold">☕ เครื่องดื่ม</p>
+                      <p className="text-2xl font-black">฿{grandDrink.toLocaleString()}</p>
+                    </div>
+                    <div className="bg-white/10 rounded-xl p-3">
+                      <p className="text-[10px] text-slate-300 uppercase font-bold">🍱 อาหาร</p>
+                      <p className="text-2xl font-black">฿{grandFood.toLocaleString()}</p>
+                    </div>
+                    <div className="bg-gradient-to-br from-amber-500 to-orange-500 rounded-xl p-3 col-span-2 sm:col-span-2">
+                      <p className="text-[10px] text-white/80 uppercase font-bold">💰 รวมทั้งหมด</p>
+                      <p className="text-3xl font-black">฿{grandTotal.toLocaleString()}</p>
+                      {hasUnpriced && (
+                        <p className="text-[10px] text-white/80 mt-1">⚠ บางรายการยังรอกำหนดราคา</p>
+                      )}
+                    </div>
+                  </div>
+                  {topDepts.length > 0 && (
+                    <div>
+                      <p className="text-[10px] text-slate-300 uppercase font-bold mb-2">แยกตามแผนก</p>
+                      <div className="flex flex-wrap gap-2">
+                        {topDepts.map(([d, v]) => (
+                          <span key={d} className="bg-white/10 px-3 py-1 rounded-full text-xs">
+                            <span className="font-bold">{d}</span>: ฿{v.toLocaleString()}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
+
             {foodOrders.length === 0 ? (
               <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-12 text-center">
                 <UtensilsCrossed size={48} className="text-slate-200 mx-auto mb-4" />
@@ -721,16 +891,43 @@ export default function GAView({ user, onLogout }) {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {foodOrders.map((order) => {
                   const p = order.requestPayload || {};
-                  const rows = p.rows || [];
+                  const isCombined = order.sourceForm === 'DRINK_FOOD_ORDER';
                   const isDrink = order.sourceForm === 'DRINK_ORDER';
+                  // Flatten rows — combined orders tag each row with ประเภท
+                  let rows;
+                  if (isCombined) {
+                    const drinkRows = (p.drinkRows || []).map(r => ({ ...r, _kind: 'เครื่องดื่ม' }));
+                    const foodRows = (p.foodRows || []).map(r => ({ ...r, _kind: 'อาหาร' }));
+                    rows = [...drinkRows, ...foodRows];
+                  } else {
+                    rows = p.rows || [];
+                  }
+                  // คำนวณยอดรวมออเดอร์
+                  let orderTotal = 0;
+                  let orderHasUnpriced = false;
+                  if (isCombined) {
+                    if (typeof p.drinkTotalAmount === 'number') orderTotal += p.drinkTotalAmount;
+                    if (typeof p.foodTotalAmount === 'number') orderTotal += p.foodTotalAmount;
+                    if (rows.some(r => r.lineTotal == null)) orderHasUnpriced = true;
+                  } else {
+                    if (typeof p.totalAmount === 'number') orderTotal = p.totalAmount;
+                    for (const r of rows) {
+                      if (r.lineTotal == null) orderHasUnpriced = true;
+                      else if (typeof p.totalAmount !== 'number') orderTotal += r.lineTotal;
+                    }
+                  }
+                  const borderClass = isCombined ? 'border-purple-200' : (isDrink ? 'border-emerald-200' : 'border-orange-200');
+                  const bgClass = isCombined ? 'bg-purple-50' : (isDrink ? 'bg-emerald-50' : 'bg-orange-50');
+                  const badgeClass = isCombined ? 'bg-purple-100 text-purple-700' : (isDrink ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700');
+                  const btnClass = isCombined ? 'bg-purple-500 hover:bg-purple-600' : (isDrink ? 'bg-emerald-500 hover:bg-emerald-600' : 'bg-orange-500 hover:bg-orange-600');
                   return (
-                    <div key={order._docId} className={`bg-white rounded-2xl shadow-sm border-2 p-5 ${isDrink ? 'border-emerald-200' : 'border-orange-200'}`}>
+                    <div key={order._docId} className={`bg-white rounded-2xl shadow-sm border-2 p-5 ${borderClass}`}>
                       {/* Header */}
                       <div className="flex items-center justify-between mb-3">
                         <div className="flex items-center gap-2">
-                          {isDrink ? <Coffee size={18} className="text-emerald-500" /> : <UtensilsCrossed size={18} className="text-orange-500" />}
-                          <span className={`text-xs font-black px-2 py-0.5 rounded-full ${isDrink ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>
-                            {isDrink ? 'เครื่องดื่ม' : 'อาหาร'}
+                          {isCombined ? (<><Coffee size={16} className="text-purple-500" /><UtensilsCrossed size={16} className="text-purple-500" /></>) : isDrink ? <Coffee size={18} className="text-emerald-500" /> : <UtensilsCrossed size={18} className="text-orange-500" />}
+                          <span className={`text-xs font-black px-2 py-0.5 rounded-full ${badgeClass}`}>
+                            {isCombined ? 'เครื่องดื่ม + อาหาร' : isDrink ? 'เครื่องดื่ม' : 'อาหาร'}
                           </span>
                         </div>
                         <span className="text-[10px] text-slate-400">
@@ -745,34 +942,67 @@ export default function GAView({ user, onLogout }) {
                       </div>
 
                       {/* Order Items */}
-                      <div className={`rounded-xl p-3 mb-3 ${isDrink ? 'bg-emerald-50' : 'bg-orange-50'}`}>
+                      <div className={`rounded-xl p-3 mb-3 ${bgClass}`}>
                         <table className="w-full text-sm">
                           <thead>
                             <tr className="text-left text-[10px] font-bold text-slate-500">
                               <th className="pb-1">#</th>
+                              {isCombined && <th className="pb-1">ประเภท</th>}
                               <th className="pb-1">รายการ</th>
                               <th className="pb-1 text-center">จำนวน</th>
-                              <th className="pb-1">หมวด</th>
+                              <th className="pb-1 text-right">ราคา/หน่วย</th>
+                              <th className="pb-1 text-right">รวม</th>
                             </tr>
                           </thead>
                           <tbody>
                             {rows.map((r, i) => (
                               <tr key={i} className="border-t border-slate-100">
                                 <td className="py-1 text-slate-400">{i + 1}</td>
-                                <td className="py-1 font-bold">{r.details || '-'}</td>
+                                {isCombined && (
+                                  <td className="py-1 text-[10px] font-bold">
+                                    <span className={`px-1.5 py-0.5 rounded ${r._kind === 'เครื่องดื่ม' ? 'bg-emerald-100 text-emerald-700' : 'bg-orange-100 text-orange-700'}`}>{r._kind}</span>
+                                  </td>
+                                )}
+                                <td className="py-1 font-bold">
+                                  {r.details || '-'}
+                                  <span className="block text-[10px] font-normal text-slate-400">{r.condition || ''}</span>
+                                </td>
                                 <td className="py-1 text-center">{r.count || '-'}</td>
-                                <td className="py-1 text-xs text-slate-500">{r.condition || '-'}</td>
+                                <td className="py-1 text-right text-slate-600">
+                                  {r.unitPrice != null ? `฿${r.unitPrice}` : <span className="text-slate-300 italic">—</span>}
+                                </td>
+                                <td className="py-1 text-right font-bold">
+                                  {r.lineTotal != null ? `฿${r.lineTotal}` : <span className="text-slate-300 italic">—</span>}
+                                </td>
                               </tr>
                             ))}
                           </tbody>
+                          <tfoot>
+                            <tr className="border-t-2 border-slate-300">
+                              <td colSpan={isCombined ? 5 : 4} className="py-2 text-right text-xs font-black text-slate-600 uppercase">💰 รวมออเดอร์</td>
+                              <td className="py-2 text-right font-black text-base text-amber-700">
+                                {orderHasUnpriced ? (
+                                  <span className="text-xs text-slate-400">รอกำหนด</span>
+                                ) : (
+                                  `฿${orderTotal.toLocaleString()}`
+                                )}
+                              </td>
+                            </tr>
+                          </tfoot>
                         </table>
-                        {p.note && <p className="text-xs text-slate-500 mt-2 pt-1 border-t border-slate-200">📝 {p.note}</p>}
+                        {(p.note || p.drinkNote || p.foodNote) && (
+                          <div className="text-xs text-slate-500 mt-2 pt-1 border-t border-slate-200 space-y-0.5">
+                            {p.note && <p>📝 {p.note}</p>}
+                            {p.drinkNote && <p>☕ {p.drinkNote}</p>}
+                            {p.foodNote && <p>🍱 {p.foodNote}</p>}
+                          </div>
+                        )}
                       </div>
 
                       {/* Acknowledge Button */}
                       <button
                         onClick={() => handleAcknowledgeOrder(order)}
-                        className={`w-full py-2.5 rounded-xl font-black text-white text-sm transition-all active:scale-[0.98] ${isDrink ? 'bg-emerald-500 hover:bg-emerald-600' : 'bg-orange-500 hover:bg-orange-600'}`}
+                        className={`w-full py-2.5 rounded-xl font-black text-white text-sm transition-all active:scale-[0.98] ${btnClass}`}
                       >
                         <Check size={14} className="inline mr-1" /> รับออเดอร์
                       </button>
@@ -781,6 +1011,125 @@ export default function GAView({ user, onLogout }) {
                 })}
               </div>
             )}
+          </div>
+        )}
+
+        {/* Missing Goods Follow-up Tab (ของไม่ครบ/ค้างออก จาก รปภ.) */}
+        {activeTab === 'missing' && (
+          <div className="space-y-4">
+            <div className="bg-red-50 border-2 border-red-200 rounded-2xl p-4">
+              <div className="flex items-start gap-3">
+                <AlertTriangle className="text-red-600 shrink-0 mt-0.5" size={20} />
+                <div>
+                  <h3 className="font-black text-red-800 text-sm">ของไม่ครบ / ค้างออก — รอติดตาม</h3>
+                  <p className="text-xs text-red-600 mt-1">รปภ. ตรวจพบของกลับไม่ครบ หรือยังไม่กลับ → ส่งเรื่องมาให้ GA ติดตามกับแผนกเจ้าของ</p>
+                </div>
+              </div>
+            </div>
+
+            {missingGoods.length === 0 ? (
+              <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-12 text-center">
+                <Package size={48} className="text-slate-200 mx-auto mb-4" />
+                <p className="text-slate-400 text-sm">ไม่มีเรื่องของไม่ครบรอติดตาม ✓</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {missingGoods.map((g) => {
+                  const isInProgress = g.followupStatus === 'in_progress';
+                  const missing = g.missingItems || [];
+                  return (
+                    <div key={g._docId} className={`bg-white rounded-2xl shadow-sm border-2 p-5 ${isInProgress ? 'border-amber-300' : 'border-red-200'}`}>
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="flex items-center gap-2">
+                          <Package size={18} className={isInProgress ? 'text-amber-500' : 'text-red-500'} />
+                          <span className={`text-xs font-black px-2 py-0.5 rounded-full ${isInProgress ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700'}`}>
+                            {isInProgress ? 'กำลังติดตาม' : 'รอติดตาม'}
+                          </span>
+                        </div>
+                        <span className="text-[10px] text-slate-400">
+                          {g.escalatedToGAAt ? new Date(g.escalatedToGAAt).toLocaleString('th-TH') : '-'}
+                        </span>
+                      </div>
+
+                      <div className="text-sm space-y-1 mb-3">
+                        <p><span className="font-bold text-slate-500">ผู้นำของ:</span> {(g.requestPayload?.person) || g.requesterName || '-'}</p>
+                        <p><span className="font-bold text-slate-500">แผนก:</span> {g.department || g.requesterDepartment || '-'}</p>
+                        <p><span className="font-bold text-slate-500">ประเภท:</span> {g.sourceForm === 'GOODS_IN_OUT' ? 'นำของเข้า/ออก' : (g.sourceForm || '-')}</p>
+                        {g.returnNote && <p className="text-xs text-slate-500 italic">📝 หมายเหตุ รปภ.: {g.returnNote}</p>}
+                      </div>
+
+                      <div className="bg-red-50 rounded-xl p-3 mb-3">
+                        <p className="text-[10px] font-black text-red-700 uppercase mb-2">รายการที่ขาด ({missing.length})</p>
+                        <table className="w-full text-xs">
+                          <thead>
+                            <tr className="text-left font-bold text-slate-500">
+                              <th className="pb-1">รายการ</th>
+                              <th className="pb-1 text-center">ออก</th>
+                              <th className="pb-1 text-center">กลับ</th>
+                              <th className="pb-1 text-center text-red-700">ขาด</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {missing.map((m, i) => (
+                              <tr key={i} className="border-t border-red-100">
+                                <td className="py-1 font-bold">{m.description || '-'}</td>
+                                <td className="py-1 text-center">{m.qtyOut} {m.unit}</td>
+                                <td className="py-1 text-center">{m.qtyReturned} {m.unit}</td>
+                                <td className="py-1 text-center font-black text-red-700">{m.qtyMissing} {m.unit}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+
+                      <div className="flex gap-2">
+                        {!isInProgress && (
+                          <button
+                            onClick={() => handleMissingStart(g)}
+                            className="flex-1 py-2.5 rounded-xl font-black text-white text-sm transition-all active:scale-[0.98] bg-amber-500 hover:bg-amber-600"
+                          >
+                            <Phone size={14} className="inline mr-1" /> เริ่มติดตาม
+                          </button>
+                        )}
+                        <button
+                          onClick={() => { setSelectedMissing(g); setFollowupNote(''); }}
+                          className="flex-1 py-2.5 rounded-xl font-black text-white text-sm transition-all active:scale-[0.98] bg-emerald-600 hover:bg-emerald-700"
+                        >
+                          <Check size={14} className="inline mr-1" /> ปิดเรื่อง
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Resolve modal */}
+        {selectedMissing && (
+          <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={() => setSelectedMissing(null)}>
+            <div className="bg-white rounded-3xl max-w-lg w-full p-6 shadow-2xl" onClick={e => e.stopPropagation()}>
+              <div className="flex items-center gap-3 mb-4">
+                <CheckCircle className="text-emerald-600" size={24} />
+                <h3 className="font-black text-slate-900">ปิดเรื่อง — ของไม่ครบ</h3>
+              </div>
+              <p className="text-sm text-slate-600 mb-4">
+                ผู้นำของ: <b>{(selectedMissing.requestPayload?.person) || selectedMissing.requesterName || '-'}</b><br/>
+                แผนก: <b>{selectedMissing.department || selectedMissing.requesterDepartment || '-'}</b>
+              </p>
+              <label className="text-xs font-black text-slate-500 uppercase tracking-widest">บันทึกผลติดตาม (optional)</label>
+              <textarea
+                className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm mt-2 min-h-[80px] focus:ring-2 focus:ring-emerald-100 focus:border-emerald-500 outline-none"
+                placeholder="เช่น: พนักงานนำของมาคืนแล้ว / หักค่าเสียหาย / แจ้งหัวหน้าแผนกแล้ว..."
+                value={followupNote}
+                onChange={e => setFollowupNote(e.target.value)}
+              />
+              <div className="flex gap-2 mt-4">
+                <button onClick={() => setSelectedMissing(null)} className="flex-1 py-2.5 rounded-xl font-bold text-slate-600 bg-slate-100 hover:bg-slate-200">ยกเลิก</button>
+                <button onClick={handleMissingResolve} className="flex-1 py-2.5 rounded-xl font-black text-white bg-emerald-600 hover:bg-emerald-700">ยืนยันปิดเรื่อง</button>
+              </div>
+            </div>
           </div>
         )}
       </main>

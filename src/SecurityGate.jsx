@@ -729,7 +729,10 @@ function SecurityGate({ appointments: externalAppointments, user, onLogout }) {
       description: l.description,
       qtyOut: Number(l.qty) || 1,
       unit: l.unit || '',
-      qtyReturned: (m.returnLines?.[i]?.qtyReturned) ?? (Number(l.qty) || 1),
+      // เก็บเป็น string ว่างเริ่มต้น → พิมพ์ได้เลยไม่ต้องลบ 0
+      qtyReturned: (m.returnLines?.[i]?.qtyReturned !== undefined && m.returnLines?.[i]?.qtyReturned !== null)
+        ? String(m.returnLines[i].qtyReturned)
+        : '',
     }));
     setReturnItem(m);
     setReturnLines(linesForCheck);
@@ -739,20 +742,54 @@ function SecurityGate({ appointments: externalAppointments, user, onLogout }) {
   // บันทึกผลตรวจรับของกลับ
   const handleSaveReturn = async () => {
     if (!returnItem || !firebaseReady || !db) return;
-    const allFull = returnLines.every(l => l.qtyReturned >= l.qtyOut);
+    // Normalize: แปลง string ว่าง → 0 และ string → number สำหรับการเปรียบเทียบ/บันทึก
+    const normLines = returnLines.map(l => ({
+      ...l,
+      qtyReturnedNum: l.qtyReturned === '' || l.qtyReturned === null || l.qtyReturned === undefined
+        ? 0
+        : (parseInt(l.qtyReturned, 10) || 0),
+    }));
+    const allFull = normLines.every(l => l.qtyReturnedNum >= l.qtyOut);
     const newStatus = allFull ? 'returned' : 'partial';
     try {
       const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'approval_workflows', returnItem.id);
-      await updateDoc(docRef, {
+      const missingItems = normLines
+        .filter(l => l.qtyReturnedNum < l.qtyOut)
+        .map(l => ({
+          description: l.description,
+          qtyOut: l.qtyOut,
+          qtyReturned: l.qtyReturnedNum,
+          qtyMissing: l.qtyOut - l.qtyReturnedNum,
+          unit: l.unit,
+        }));
+      const updates = {
         returnStatus: newStatus,
-        returnLines: returnLines.map(l => ({ description: l.description, qtyOut: l.qtyOut, qtyReturned: l.qtyReturned, unit: l.unit })),
+        returnLines: normLines.map(l => ({ description: l.description, qtyOut: l.qtyOut, qtyReturned: l.qtyReturnedNum, unit: l.unit })),
         returnDate: new Date().toISOString(),
         returnRecordedBy: 'SECURITY',
         returnNote: returnNote || '',
-      });
+      };
       if (!allFull) {
-        const missing = returnLines.filter(l => l.qtyReturned < l.qtyOut).map(l => `${l.description}: ออก ${l.qtyOut} กลับ ${l.qtyReturned} ${l.unit}`).join('\n');
-        alert(`⚠️ ของกลับไม่ครบ!\n\n${missing}\n\nระบบจะแจ้งหัวหน้าแผนก ${returnItem.department}`);
+        // Escalate to GA: ส่งเรื่องไปให้แผนก GA ติดตาม
+        updates.escalatedToGA = true;
+        updates.escalatedToGAAt = new Date().toISOString();
+        updates.missingItems = missingItems;
+        updates.followupStatus = 'pending_ga'; // pending_ga | in_progress | resolved
+        updates.followupHistory = [
+          ...(returnItem.followupHistory || []),
+          {
+            by: 'SECURITY',
+            action: 'escalate_to_ga',
+            note: returnNote || '',
+            at: new Date().toISOString(),
+            missingCount: missingItems.length,
+          },
+        ];
+      }
+      await updateDoc(docRef, updates);
+      if (!allFull) {
+        const missingText = missingItems.map(l => `• ${l.description}: ออก ${l.qtyOut} กลับ ${l.qtyReturned} ${l.unit} (ขาด ${l.qtyMissing})`).join('\n');
+        alert(`⚠️ ของกลับไม่ครบ — ส่งเรื่องไปแผนก GA แล้ว\n\nรายการขาด:\n${missingText}\n\nGA จะติดตามกับแผนก ${returnItem.department} (ผู้ขอ: ${returnItem.person || '-'})`);
       } else {
         alert('✅ ของกลับครบทุกรายการ');
       }
@@ -1138,68 +1175,102 @@ function SecurityGate({ appointments: externalAppointments, user, onLogout }) {
               <p className="text-sm text-orange-600 mt-1">ผู้นำของ: {returnItem.person} | แผนก: {returnItem.department}</p>
             </div>
             <div className="p-6 space-y-4">
-              {returnLines.map((l, idx) => (
+              {returnLines.map((l, idx) => {
+                const qtyReturnedNum = l.qtyReturned === '' || l.qtyReturned === null || l.qtyReturned === undefined
+                  ? -1 // ยังไม่พิมพ์ — ไม่ต้องแสดง ✅/⚠️
+                  : Number(l.qtyReturned);
+                const isFull = qtyReturnedNum >= l.qtyOut;
+                const isEmpty = qtyReturnedNum < 0;
+                return (
                 <div key={idx} className="p-4 bg-slate-50 rounded-2xl border border-slate-200">
                   <p className="font-bold text-slate-800 mb-2">{idx+1}. {l.description}</p>
                   <div className="flex items-center gap-4">
-                    <div className="text-center">
+                    <div className="text-center shrink-0">
                       <p className="text-[10px] font-bold text-slate-400 uppercase">จำนวนออก</p>
-                      <p className="text-lg font-black text-red-600">{l.qtyOut} {l.unit}</p>
+                      <p className="text-lg font-black text-red-600 whitespace-nowrap">{l.qtyOut}{l.unit ? ` ${l.unit}` : ''}</p>
                     </div>
                     <div className="text-center flex-1">
                       <p className="text-[10px] font-bold text-slate-400 uppercase mb-1">จำนวนกลับ</p>
                       <input
-                        type="number"
-                        min="0"
-                        max={l.qtyOut}
+                        type="text"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
                         value={l.qtyReturned}
+                        placeholder="0"
                         onFocus={(e) => e.target.select()}
                         onChange={(e) => {
-                          const raw = e.target.value;
-                          if (raw === '') { setReturnLines(prev => prev.map((rl, ri) => ri === idx ? { ...rl, qtyReturned: 0 } : rl)); return; }
-                          const val = Math.max(0, Math.min(l.qtyOut, parseInt(raw, 10) || 0));
-                          setReturnLines(prev => prev.map((rl, ri) => ri === idx ? { ...rl, qtyReturned: val } : rl));
+                          // รับเฉพาะตัวเลข (ลบ non-digit ออก) — พิมพ์ได้อิสระ ไม่ต้องลบ 0 ก่อน
+                          const digitsOnly = e.target.value.replace(/[^0-9]/g, '');
+                          setReturnLines(prev => prev.map((rl, ri) => ri === idx ? { ...rl, qtyReturned: digitsOnly } : rl));
+                        }}
+                        onBlur={() => {
+                          // Clamp ตอน blur เท่านั้น (max = qtyOut) — ไม่กวนการพิมพ์
+                          setReturnLines(prev => prev.map((rl, ri) => {
+                            if (ri !== idx) return rl;
+                            if (rl.qtyReturned === '') return rl;
+                            const n = parseInt(rl.qtyReturned, 10);
+                            if (isNaN(n)) return { ...rl, qtyReturned: '' };
+                            const clamped = Math.max(0, Math.min(l.qtyOut, n));
+                            return { ...rl, qtyReturned: String(clamped) };
+                          }));
                         }}
                         className="w-full p-3 border-2 border-slate-300 rounded-xl text-center text-lg font-black focus:border-orange-500 focus:ring-2 focus:ring-orange-200 outline-none"
                       />
                     </div>
-                    <div className="text-center">
-                      {l.qtyReturned >= l.qtyOut
+                    <div className="text-center shrink-0 w-8">
+                      {isEmpty
+                        ? <span className="text-slate-300 font-bold text-xl">—</span>
+                        : isFull
                         ? <span className="text-green-600 font-bold text-xl">✅</span>
                         : <span className="text-red-600 font-bold text-xl">⚠️</span>
                       }
                     </div>
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
             {/* ช่องเหตุผล — แสดงเมื่อของไม่ครบ */}
-            {!returnLines.every(l => l.qtyReturned >= l.qtyOut) && (
-              <div className="px-6 pb-2">
-                <label className="text-xs font-bold text-red-600 uppercase block mb-2">เหตุผลที่กลับไม่ครบ *</label>
-                <textarea
-                  value={returnNote}
-                  onChange={(e) => setReturnNote(e.target.value)}
-                  placeholder="เช่น ของเสียหาย, ส่งซ่อม, ฝากไว้ที่ลูกค้า..."
-                  className="w-full p-3 border-2 border-red-300 rounded-xl outline-none focus:border-red-500 focus:ring-2 focus:ring-red-200 text-sm h-20 resize-none"
-                />
-              </div>
-            )}
+            {(() => {
+              const allFullCheck = returnLines.every(l => {
+                const n = l.qtyReturned === '' || l.qtyReturned === null || l.qtyReturned === undefined ? 0 : (parseInt(l.qtyReturned, 10) || 0);
+                return n >= l.qtyOut;
+              });
+              return !allFullCheck && (
+                <div className="px-6 pb-2">
+                  <label className="text-xs font-bold text-red-600 uppercase block mb-2">เหตุผลที่กลับไม่ครบ *</label>
+                  <textarea
+                    value={returnNote}
+                    onChange={(e) => setReturnNote(e.target.value)}
+                    placeholder="เช่น ของเสียหาย, ส่งซ่อม, ฝากไว้ที่ลูกค้า..."
+                    className="w-full p-3 border-2 border-red-300 rounded-xl outline-none focus:border-red-500 focus:ring-2 focus:ring-red-200 text-sm h-20 resize-none"
+                  />
+                </div>
+              );
+            })()}
             <div className="px-6 pb-6 pt-4 border-t border-slate-100 flex flex-col gap-3">
-              <button
-                onClick={handleSaveReturn}
-                disabled={!returnLines.every(l => l.qtyReturned >= l.qtyOut) && !returnNote.trim()}
-                className={`w-full py-4 rounded-xl font-black text-lg shadow-lg flex items-center justify-center gap-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
-                  returnLines.every(l => l.qtyReturned >= l.qtyOut)
-                    ? 'bg-green-600 text-white hover:bg-green-700'
-                    : 'bg-red-600 text-white hover:bg-red-700'
-                }`}
-              >
-                {returnLines.every(l => l.qtyReturned >= l.qtyOut)
-                  ? <><ShieldCheck size={22} /> ยืนยัน — ของกลับครบ</>
-                  : <><Package size={22} /> ยืนยัน — ของกลับไม่ครบ (แจ้งหัวหน้า)</>
-                }
-              </button>
+              {(() => {
+                const allFullCheck = returnLines.every(l => {
+                  const n = l.qtyReturned === '' || l.qtyReturned === null || l.qtyReturned === undefined ? 0 : (parseInt(l.qtyReturned, 10) || 0);
+                  return n >= l.qtyOut;
+                });
+                return (
+                  <button
+                    onClick={handleSaveReturn}
+                    disabled={!allFullCheck && !returnNote.trim()}
+                    className={`w-full py-4 rounded-xl font-black text-lg shadow-lg flex items-center justify-center gap-2 transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+                      allFullCheck
+                        ? 'bg-green-600 text-white hover:bg-green-700'
+                        : 'bg-red-600 text-white hover:bg-red-700'
+                    }`}
+                  >
+                    {allFullCheck
+                      ? <><ShieldCheck size={22} /> ยืนยัน — ของกลับครบ</>
+                      : <><Package size={22} /> ยืนยัน — ของกลับไม่ครบ (แจ้งหัวหน้า)</>
+                    }
+                  </button>
+                );
+              })()}
               <button onClick={() => { setShowReturnModal(false); setReturnItem(null); setReturnNote(''); }} className="w-full bg-white border border-slate-200 text-slate-600 py-3 rounded-xl font-bold hover:bg-slate-100">ยกเลิก</button>
             </div>
           </div>
@@ -1264,7 +1335,12 @@ function SecurityGate({ appointments: externalAppointments, user, onLogout }) {
           const allVisitors = visitors; // ทุกสถานะ
           const empOut = employees.filter(e => e.status === 'OUT');
           const matsIn = materials.filter(m => m.type === 'IN' && m.time === todayStr);
-          const matsOut = materials.filter(m => m.type === 'OUT' && m.time === todayStr);
+          const matsOutToday = materials.filter(m => m.type === 'OUT' && m.time === todayStr);
+          // รวมของที่ออกวันนี้ + ของค้างออก (ออกไปแล้ววันก่อน ยังไม่กลับ) เพื่อไม่ให้ badge กับ count ขัดแย้งกัน
+          const matsOutMap = new Map();
+          for (const m of matsOutToday) matsOutMap.set(m.id || m, m);
+          for (const m of outstandingItems) if (!matsOutMap.has(m.id || m)) matsOutMap.set(m.id || m, m);
+          const matsOut = Array.from(matsOutMap.values());
           const pendingDocsList = approvedDocs.filter(d => d.status === 'pending');
 
           // แยกกลุ่มผู้มาติดต่อ 4 กลุ่ม
@@ -1368,14 +1444,14 @@ function SecurityGate({ appointments: externalAppointments, user, onLogout }) {
             },
             {
               id: 'matsOut',
-              title: 'พัสดุออกวันนี้',
+              title: 'พัสดุออก / ค้างออก',
               icon: <LogOut size={18} />,
               count: matsOut.length,
               alert: stats.outstandingGoods > 0,
               alertText: `⚠️ ค้างออก ${stats.outstandingGoods} รายการ`,
               activeColor: 'border-rose-500 bg-slate-900',
               headerColor: 'bg-rose-600',
-              emptyText: 'ยังไม่มีพัสดุออก',
+              emptyText: 'ยังไม่มีพัสดุออก / ค้างออก',
               ref: secMaterials,
               rows: matsOut.map((m, i) => ({
                 key: i,
@@ -1501,8 +1577,8 @@ function SecurityGate({ appointments: externalAppointments, user, onLogout }) {
                 </button>
               </div>
 
-              {/* Auto-sorted card grid */}
-              <div className="grid grid-cols-3 gap-3">
+              {/* Auto-sorted card grid — mobile: 1 col, tablet: 2 cols, desktop: 3 cols */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
                 {sorted.map(card => {
                   const isEmpty = card.count === 0 && !card.alert;
                   return (

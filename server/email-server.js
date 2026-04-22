@@ -21,31 +21,35 @@ import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-// โหลด .env
+// โหลด config — รองรับทั้ง
+//   1. Cloud environment (Render/Railway/Fly) — อ่านจาก process.env
+//   2. Local dev — อ่านจาก .env file
 function loadEnv() {
+  const env = { ...process.env }; // Cloud env vars มาก่อน
   try {
     const envPath = resolve(__dirname, '..', '.env');
     const content = readFileSync(envPath, 'utf-8');
-    const env = {};
     for (const line of content.split('\n')) {
       const trimmed = line.trim();
       if (!trimmed || trimmed.startsWith('#')) continue;
       const eqIdx = trimmed.indexOf('=');
       if (eqIdx === -1) continue;
-      env[trimmed.slice(0, eqIdx).trim()] = trimmed.slice(eqIdx + 1).trim();
+      const key = trimmed.slice(0, eqIdx).trim();
+      const val = trimmed.slice(eqIdx + 1).trim();
+      // ถ้า process.env ยังไม่มี ให้ใช้จาก .env
+      if (!env[key]) env[key] = val;
     }
-    return env;
   } catch {
-    console.error('ไม่พบไฟล์ .env');
-    return {};
+    // ไม่มี .env ก็ไม่เป็นไร (บน cloud ใช้ process.env)
   }
+  return env;
 }
 
 const env = loadEnv();
-const PORT = env.EMAIL_SERVER_PORT || 3001;
+const PORT = process.env.PORT || env.EMAIL_SERVER_PORT || 3001;
 
-// ตั้งค่า SMTP transporter
-const smtpConfig = {
+// ตั้งค่า SMTP transporter — รองรับทั้ง .env และ Admin UI (runtime reload)
+let smtpConfig = {
   host: env.SMTP_HOST || 'smtp.office365.com',
   port: parseInt(env.SMTP_PORT || '587'),
   secure: env.SMTP_SECURE === 'true',
@@ -54,24 +58,161 @@ const smtpConfig = {
     pass: env.SMTP_PASS || '',
   },
 };
+let smtpFrom = env.SMTP_FROM || env.SMTP_USER || 'noreply@tbkk.co.th';
+let smtpFromName = env.SMTP_FROM_NAME || 'SOC Systems - TBKK Group';
+let smtpSource = 'env'; // 'env' | 'firestore' | 'runtime'
 
 let transporter = null;
 
-if (smtpConfig.auth.user && smtpConfig.auth.pass) {
-  transporter = nodemailer.createTransport(smtpConfig);
-  console.log(`✅ SMTP พร้อมใช้งาน (${smtpConfig.auth.user} → ${smtpConfig.host}:${smtpConfig.port})`);
-} else {
-  console.warn('⚠️ ยังไม่ได้ตั้งค่า SMTP_USER / SMTP_PASS ใน .env');
-  console.warn('   ระบบจะจำลองการส่ง email (ไม่ส่งจริง)');
+function buildTransporter() {
+  if (smtpConfig.auth.user && smtpConfig.auth.pass) {
+    try {
+      transporter = nodemailer.createTransport(smtpConfig);
+      console.log(`✅ SMTP พร้อมใช้งาน (${smtpConfig.auth.user} → ${smtpConfig.host}:${smtpConfig.port}) [source=${smtpSource}]`);
+      return true;
+    } catch (err) {
+      transporter = null;
+      console.error('❌ สร้าง transporter ล้มเหลว:', err.message);
+      return false;
+    }
+  } else {
+    transporter = null;
+    console.warn('⚠️ ยังไม่ได้ตั้งค่า SMTP_USER / SMTP_PASS');
+    console.warn('   ระบบจะจำลองการส่ง email (Demo mode)');
+    return false;
+  }
 }
 
+buildTransporter();
+
+// พยายามโหลด SMTP config จาก Firestore REST API (ถ้าตั้งค่าไว้)
+// ต้องมี VITE_FIREBASE_PROJECT_ID ใน .env และ Firestore rules ยอมให้ read anonymous
+async function loadSmtpFromFirestore() {
+  const projectId = env.VITE_FIREBASE_PROJECT_ID;
+  const apiKey = env.VITE_FIREBASE_API_KEY;
+  const appId = env.VITE_APP_ID || 'visitor-soc-001';
+  if (!projectId || !apiKey) return;
+
+  try {
+    // Sign in anonymous ก่อน (ได้ idToken)
+    const signInRes = await fetch(
+      `https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${apiKey}`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ returnSecureToken: true }) }
+    );
+    const signInJson = await signInRes.json();
+    const idToken = signInJson.idToken;
+    if (!idToken) {
+      console.log('ℹ️  ไม่สามารถ sign in anonymous เพื่อโหลด SMTP จาก Firestore (ข้ามไปใช้ .env)');
+      return;
+    }
+
+    const docPath = `artifacts/${appId}/public/data/smtp_settings/default`;
+    const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/${docPath}`;
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${idToken}` } });
+    if (!res.ok) {
+      if (res.status === 404) {
+        console.log('ℹ️  ยังไม่มี SMTP settings ใน Firestore (ใช้จาก .env)');
+      } else {
+        console.log(`ℹ️  ไม่สามารถโหลด SMTP จาก Firestore: HTTP ${res.status} (ใช้จาก .env)`);
+      }
+      return;
+    }
+    const json = await res.json();
+    const fields = json.fields || {};
+    const g = (k) => {
+      const v = fields[k];
+      if (!v) return undefined;
+      if (v.stringValue !== undefined) return v.stringValue;
+      if (v.integerValue !== undefined) return parseInt(v.integerValue);
+      if (v.booleanValue !== undefined) return v.booleanValue;
+      return undefined;
+    };
+    const enabled = g('enabled');
+    if (!enabled) {
+      console.log('ℹ️  SMTP settings ใน Firestore ปิดใช้งาน (enabled=false) — ใช้จาก .env');
+      return;
+    }
+    const host = g('host');
+    const port = g('port');
+    const user = g('user');
+    const pass = g('pass');
+    if (host && user && pass) {
+      smtpConfig = {
+        host,
+        port: parseInt(port) || 587,
+        secure: !!g('secure'),
+        auth: { user, pass },
+      };
+      smtpFrom = g('from') || user;
+      smtpFromName = g('fromName') || 'SOC Systems - TBKK Group';
+      smtpSource = 'firestore';
+      buildTransporter();
+    }
+  } catch (err) {
+    console.log('ℹ️  โหลด SMTP จาก Firestore ไม่สำเร็จ:', err.message);
+  }
+}
+
+loadSmtpFromFirestore();
+
 const app = express();
-app.use(cors());
+// CORS — อนุญาตเฉพาะ localhost + domain ของ TBKK (ความปลอดภัย)
+const ALLOWED_ORIGINS = [
+  'http://localhost:3000',
+  'http://localhost:5173',
+  'https://tbkk-system.web.app',
+  'https://tbkk-system.firebaseapp.com',
+];
+app.use(cors({
+  origin: (origin, cb) => {
+    // อนุญาต requests ไม่มี origin (curl, mobile apps, same-origin)
+    if (!origin) return cb(null, true);
+    if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+    // log origin ที่ไม่รู้จัก — กรณีต้องเพิ่มในอนาคต
+    console.warn(`⚠️ CORS blocked: ${origin}`);
+    return cb(new Error('Not allowed by CORS'));
+  },
+}));
 app.use(express.json({ limit: '5mb' }));
 
 // Health check
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', smtp: !!transporter });
+  res.json({
+    status: 'ok',
+    smtp: !!transporter,
+    hasSMTP: !!transporter,
+    source: smtpSource,
+    host: smtpConfig.host,
+    port: smtpConfig.port,
+    secure: smtpConfig.secure,
+    user: smtpConfig.auth.user ? smtpConfig.auth.user.replace(/^(.).+(@.+)$/, '$1***$2') : '',
+    from: smtpFrom,
+  });
+});
+
+// รับการ reload SMTP config จาก Admin UI (runtime only — ไม่เขียน .env)
+app.post('/api/config/smtp', (req, res) => {
+  const { host, port, secure, user, pass, from, fromName, enabled } = req.body || {};
+  if (enabled === false) {
+    transporter = null;
+    smtpSource = 'runtime-disabled';
+    console.log('🔌 SMTP ถูกปิดใช้งานจาก Admin UI (ใช้ Demo mode)');
+    return res.json({ success: true, message: 'SMTP ปิดใช้งานแล้ว', hasSMTP: false });
+  }
+  if (!host || !user || !pass) {
+    return res.status(400).json({ error: 'ต้องระบุ host, user, pass' });
+  }
+  smtpConfig = {
+    host: String(host).trim(),
+    port: parseInt(port) || 587,
+    secure: !!secure,
+    auth: { user: String(user).trim(), pass: String(pass) },
+  };
+  smtpFrom = (from && String(from).trim()) || smtpConfig.auth.user;
+  smtpFromName = (fromName && String(fromName).trim()) || 'SOC Systems - TBKK Group';
+  smtpSource = 'runtime';
+  const ok = buildTransporter();
+  res.json({ success: ok, hasSMTP: !!transporter, host: smtpConfig.host, port: smtpConfig.port });
 });
 
 // ส่ง email
@@ -83,10 +224,10 @@ app.post('/api/send-email', async (req, res) => {
   }
 
   const mailOptions = {
-    from: env.SMTP_FROM || env.SMTP_USER || 'noreply@tbkk.co.th',
+    from: smtpFromName ? `"${smtpFromName}" <${smtpFrom}>` : smtpFrom,
     to,
     subject,
-    text: body || '',
+    text: body || req.body.text || '',
     html: html || undefined,
   };
 
@@ -150,7 +291,7 @@ app.post('/api/send-approval-email', async (req, res) => {
   `;
 
   const mailOptions = {
-    from: env.SMTP_FROM || env.SMTP_USER || 'noreply@tbkk.co.th',
+    from: smtpFromName ? `"${smtpFromName}" <${smtpFrom}>` : smtpFrom,
     to,
     subject,
     html,
@@ -218,7 +359,7 @@ app.post('/api/send-invite-email', async (req, res) => {
   `;
 
   const mailOptions = {
-    from: env.SMTP_FROM || env.SMTP_USER || 'noreply@tbkk.co.th',
+    from: smtpFromName ? `"${smtpFromName}" <${smtpFrom}>` : smtpFrom,
     to,
     subject,
     html,

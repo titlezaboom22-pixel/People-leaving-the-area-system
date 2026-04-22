@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Printer, FileText, Eraser, Upload, Coffee, Send, Plus, Minus, Trash2, X, UtensilsCrossed } from 'lucide-react';
 import { createApprovalWorkflowRequest } from './approvalNotifications';
-import { getHeadEmail, copyHtmlAndOpenOutlook, buildApproveUrl } from './emailHelper';
+import { copyHtmlAndOpenOutlook, buildApproveUrl } from './emailHelper';
+import { SPECIAL_EMAILS } from './constants';
 import { printDrinkOrder, printFoodOrder, printCombinedOrder } from './printDocument';
 
 function getHeadByDepartment(dept) {
@@ -10,56 +11,91 @@ function getHeadByDepartment(dept) {
 }
 
 // =================== เมนูเครื่องดื่ม ===================
+// ราคาจากร้าน To Be Coffee (TBKK)
 const DRINK_MENU = {
   coffee: {
     label: '☕ กาแฟ',
     icon: '☕',
     color: 'amber',
     tempOptions: ['ร้อน', 'เย็น'],
-    items: ['กาแฟดำ', 'แอสเปรสโซ', 'ลาเต้', 'คาปูชิโน่', 'ม็อคคา'],
+    items: [
+      { name: 'กาแฟดำ',     hot: 35, iced: 40 },
+      { name: 'แอสเปรสโซ',  hot: 35, iced: 40 },
+      { name: 'ลาเต้',       hot: 35, iced: 45 },
+      { name: 'คาปูชิโน่',   hot: 35, iced: 45 },
+      { name: 'ม็อคคา',      hot: 35, iced: 45 },
+    ],
   },
   tea: {
     label: '🍵 ชา',
     icon: '🍵',
     color: 'green',
     tempOptions: ['เย็น'],
-    items: ['ชาเขียว', 'ชาไทย', 'ชาพีช'],
+    items: [
+      { name: 'ชาเขียว', hot: null, iced: 40 },
+      { name: 'ชาไทย',   hot: null, iced: 40 },
+      { name: 'ชาพีช',   hot: null, iced: 40 },
+    ],
   },
   soda: {
     label: '🥤 อิตาเลียนโซดา',
     icon: '🥤',
     color: 'blue',
     tempOptions: ['เย็น'],
-    items: ['แดงโซดา', 'แดงมะนาวโซดา', 'บลูฮาวายโซดา', 'บลูเบอรี่โซดา', 'พีชโซดา'],
+    items: [
+      { name: 'แดงโซดา',        hot: null, iced: 35 },
+      { name: 'แดงมะนาวโซดา',    hot: null, iced: 35 },
+      { name: 'บลูฮาวายโซดา',    hot: null, iced: 35 },
+      { name: 'บลูเบอรี่โซดา',   hot: null, iced: 35 },
+      { name: 'พีชโซดา',         hot: null, iced: 35 },
+    ],
   },
 };
 
+// Helper: ดึงราคาของรายการเครื่องดื่มตาม temp
+const getDrinkPrice = (item) => {
+  const cat = DRINK_MENU[item.category];
+  if (!cat) return 0;
+  const def = cat.items.find(i => i.name === item.name);
+  if (!def) return 0;
+  const p = item.temp === 'ร้อน' ? def.hot : def.iced;
+  return p || 0;
+};
+
 // =================== เมนูอาหาร ===================
-// เซ็ต = ข้าว 1 อย่าง + กับข้าว 3 อย่าง (เลือกจากเมนู)
-// จานเดียว = สั่งทีละจาน
+// เซ็ต = ข้าว 1 อย่าง + กับข้าว 3 อย่าง (ร้านจัดให้) ราคา ฿40 ต่อเซ็ต
+// จานเดียว = สั่งทีละจาน ราคา ฿30 ต่อจาน
 const FOOD_MENU = {
   set: {
-    label: '🍱 เซ็ต (ข้าว+กับข้าว 3 อย่าง)',
+    label: '🍱 เซ็ต ฿40 (ร้านจัดกับข้าว 3 อย่าง)',
     icon: '🍱',
     color: 'orange',
     items: [
-      { name: 'กระเพรา', meatOptions: ['หมู', 'ไก่', 'เนื้อ'] },
-      { name: 'ผัดพริกแกง', meatOptions: ['หมู', 'ไก่', 'เนื้อ'] },
-      { name: 'ผัดผัก', meatOptions: null },
-      { name: 'หมูกระเทียม', meatOptions: null },
+      { name: 'กระเพรา',     meatOptions: ['หมู', 'ไก่', 'เนื้อ'], price: 40 },
+      { name: 'ผัดพริกแกง',   meatOptions: ['หมู', 'ไก่', 'เนื้อ'], price: 40 },
+      { name: 'ผัดผัก',       meatOptions: null, price: 40 },
+      { name: 'หมูกระเทียม',  meatOptions: null, price: 40 },
     ],
   },
   single: {
-    label: '🍛 จานเดียว',
+    label: '🍛 จานเดียว ฿30',
     icon: '🍛',
     color: 'red',
     items: [
-      { name: 'กระเพรา', meatOptions: ['หมู', 'ไก่', 'เนื้อ'] },
-      { name: 'ผัดพริกแกง', meatOptions: ['หมู', 'ไก่', 'เนื้อ'] },
-      { name: 'ผัดผัก', meatOptions: null },
-      { name: 'หมูกระเทียม', meatOptions: null },
+      { name: 'กระเพรา',     meatOptions: ['หมู', 'ไก่', 'เนื้อ'], price: 30 },
+      { name: 'ผัดพริกแกง',   meatOptions: ['หมู', 'ไก่', 'เนื้อ'], price: 30 },
+      { name: 'ผัดผัก',       meatOptions: null, price: 30 },
+      { name: 'หมูกระเทียม',  meatOptions: null, price: 30 },
     ],
   },
+};
+
+// Helper: ดึงราคาอาหาร (null ถ้ายังไม่กำหนด)
+const getFoodPrice = (item) => {
+  const cat = FOOD_MENU[item.category];
+  if (!cat) return null;
+  const def = cat.items.find(i => i.name === item.name);
+  return def?.price ?? null;
 };
 
 const foodCatColors = {
@@ -235,6 +271,7 @@ const DrinkOrderFormApp = () => {
   };
 
   const totalDrinkItems = orderItems.reduce((sum, item) => sum + item.qty, 0);
+  const totalDrinkAmount = orderItems.reduce((sum, item) => sum + getDrinkPrice(item) * item.qty, 0);
 
   // === Food functions ===
   const addFoodItem = (itemDef, category) => {
@@ -257,6 +294,11 @@ const DrinkOrderFormApp = () => {
   };
 
   const totalFoodItems = foodItems.reduce((sum, item) => sum + item.qty, 0);
+  const totalFoodAmount = foodItems.reduce((sum, item) => {
+    const p = getFoodPrice(item);
+    return sum + (p || 0) * item.qty;
+  }, 0);
+  const hasFoodWithoutPrice = foodItems.some(item => getFoodPrice(item) == null);
 
   const handleBack = () => {
     if (window.opener) window.close();
@@ -266,15 +308,21 @@ const DrinkOrderFormApp = () => {
   // === Send Drink ===
   const handleSendDrink = async () => {
     if (orderItems.length === 0) {
-      alert('กรุณาเลือกเครื่องดื่มอย่างน้อย 1 รายการ');
+      alert('กรุณาเลือกเครื่องดื่มอย่างน้อย 1 รายการ / Please select at least 1 drink');
       return;
     }
     const head = getHeadByDepartment(formData.department);
-    const rows = orderItems.map(item => ({
-      details: `${item.name} (${item.temp})`,
-      count: String(item.qty),
-      condition: DRINK_MENU[item.category]?.label || '',
-    }));
+    const rows = orderItems.map(item => {
+      const unitPrice = getDrinkPrice(item);
+      return {
+        details: `${item.name} (${item.temp})`,
+        count: String(item.qty),
+        condition: DRINK_MENU[item.category]?.label || '',
+        unitPrice,
+        lineTotal: unitPrice * item.qty,
+      };
+    });
+    const totalAmount = totalDrinkAmount;
 
     const payload = {
       form: 'DRINK_ORDER',
@@ -285,6 +333,7 @@ const DrinkOrderFormApp = () => {
       orderDate: formData.orderDate || '',
       orderTime: formData.orderTime || '',
       rows,
+      totalAmount,
       note: formData.note || '',
       sentAt: new Date().toISOString(),
     };
@@ -292,7 +341,7 @@ const DrinkOrderFormApp = () => {
     let workflowItemId = null;
     try {
       workflowItemId = await createApprovalWorkflowRequest({
-        topic: 'เอกสารสั่งเครื่องดื่ม รอเซ็นอนุมัติ',
+        topic: 'เอกสารสั่งเครื่องดื่ม - GA รับออเดอร์',
         requesterId: payload.employeeId || '-',
         requesterName: payload.responsiblePerson || '-',
         requesterDepartment: payload.department || '',
@@ -305,6 +354,7 @@ const DrinkOrderFormApp = () => {
           orderTime: payload.orderTime,
           note: payload.note,
           rows,
+          totalAmount,
         },
       });
     } catch (err) {
@@ -312,34 +362,40 @@ const DrinkOrderFormApp = () => {
     }
     printDrinkOrder(payload);
     const approveUrl = workflowItemId ? buildApproveUrl(workflowItemId) : '';
-    const headEmail = await getHeadEmail(payload.department);
-    if (headEmail) {
+    const gaEmail = SPECIAL_EMAILS.GA;
+    if (gaEmail) {
       await copyHtmlAndOpenOutlook({
-        to: headEmail,
-        subject: `[SOC] เอกสารสั่งเครื่องดื่ม รอเซ็นอนุมัติ - ${payload.responsiblePerson || '-'}`,
+        to: gaEmail,
+        subject: `[SOC] ออเดอร์เครื่องดื่ม - ${payload.responsiblePerson || '-'}`,
         formType: 'DRINK_ORDER',
         data: payload,
         approveUrl,
         requesterSign: formData.ordererSign,
       });
     } else {
-      alert(`ส่งเอกสารเรียบร้อย!\nปลายทาง: ${head.name}`);
+      alert('ส่งเอกสารเรียบร้อย! / Submitted!\nปลายทาง / To: GA');
     }
   };
 
   // === Send Food ===
   const handleSendFood = async () => {
     if (foodItems.length === 0) {
-      alert('กรุณาเลือกรายการอาหารอย่างน้อย 1 รายการ');
+      alert('กรุณาเลือกรายการอาหารอย่างน้อย 1 รายการ / Please select at least 1 food item');
       return;
     }
     const head = getHeadByDepartment(formData.department);
     // แปลง foodItems → rows format เพื่อ compatibility กับ approval workflow
-    const rows = foodItems.map(item => ({
-      details: item.meat ? `${item.name} ${item.meat}` : item.name,
-      count: String(item.qty),
-      condition: FOOD_MENU[item.category]?.label || '',
-    }));
+    const rows = foodItems.map(item => {
+      const unitPrice = getFoodPrice(item);
+      return {
+        details: item.meat ? `${item.name} ${item.meat}` : item.name,
+        count: String(item.qty),
+        condition: FOOD_MENU[item.category]?.label || '',
+        unitPrice,
+        lineTotal: unitPrice != null ? unitPrice * item.qty : null,
+      };
+    });
+    const totalAmount = hasFoodWithoutPrice ? null : totalFoodAmount;
 
     const payload = {
       form: 'FOOD_ORDER',
@@ -350,6 +406,7 @@ const DrinkOrderFormApp = () => {
       orderDate: formData.orderDate || '',
       orderTime: formData.orderTime || '',
       rows,
+      totalAmount,
       note: foodNote || '',
       sentAt: new Date().toISOString(),
     };
@@ -357,7 +414,7 @@ const DrinkOrderFormApp = () => {
     let workflowItemId = null;
     try {
       workflowItemId = await createApprovalWorkflowRequest({
-        topic: 'เอกสารสั่งอาหาร รอเซ็นอนุมัติ',
+        topic: 'เอกสารสั่งอาหาร - GA รับออเดอร์',
         requesterId: payload.employeeId || '-',
         requesterName: payload.responsiblePerson || '-',
         requesterDepartment: payload.department || '',
@@ -370,6 +427,7 @@ const DrinkOrderFormApp = () => {
           orderTime: payload.orderTime,
           note: payload.note,
           rows,
+          totalAmount,
         },
       });
     } catch (err) {
@@ -377,25 +435,25 @@ const DrinkOrderFormApp = () => {
     }
     printFoodOrder(payload);
     const approveUrl = workflowItemId ? buildApproveUrl(workflowItemId) : '';
-    const headEmail = await getHeadEmail(payload.department);
-    if (headEmail) {
+    const gaEmail = SPECIAL_EMAILS.GA;
+    if (gaEmail) {
       await copyHtmlAndOpenOutlook({
-        to: headEmail,
-        subject: `[SOC] เอกสารสั่งอาหาร รอเซ็นอนุมัติ - ${payload.responsiblePerson || '-'}`,
+        to: gaEmail,
+        subject: `[SOC] ออเดอร์อาหาร - ${payload.responsiblePerson || '-'}`,
         formType: 'FOOD_ORDER',
         data: payload,
         approveUrl,
         requesterSign: formData.ordererSign,
       });
     } else {
-      alert(`ส่งเอกสารเรียบร้อย!\nปลายทาง: ${head.name}`);
+      alert('ส่งเอกสารเรียบร้อย! / Submitted!\nปลายทาง / To: GA');
     }
   };
 
   // === Send Both ===
   const handleSendBoth = async () => {
     if (orderItems.length === 0 && foodItems.length === 0) {
-      alert('กรุณาเลือกเครื่องดื่มหรืออาหารอย่างน้อย 1 รายการ');
+      alert('กรุณาเลือกเครื่องดื่มหรืออาหารอย่างน้อย 1 รายการ / Please select at least 1 drink or food item');
       return;
     }
     const head = getHeadByDepartment(formData.department);
@@ -404,11 +462,16 @@ const DrinkOrderFormApp = () => {
     let drinkPayload = null;
     let drinkRows = [];
     if (orderItems.length > 0) {
-      drinkRows = orderItems.map(item => ({
-        details: `${item.name} (${item.temp})`,
-        count: String(item.qty),
-        condition: DRINK_MENU[item.category]?.label || '',
-      }));
+      drinkRows = orderItems.map(item => {
+        const unitPrice = getDrinkPrice(item);
+        return {
+          details: `${item.name} (${item.temp})`,
+          count: String(item.qty),
+          condition: DRINK_MENU[item.category]?.label || '',
+          unitPrice,
+          lineTotal: unitPrice * item.qty,
+        };
+      });
       drinkPayload = {
         form: 'DRINK_ORDER',
         responsiblePerson: formData.responsiblePerson || '',
@@ -418,6 +481,7 @@ const DrinkOrderFormApp = () => {
         orderDate: formData.orderDate || '',
         orderTime: formData.orderTime || '',
         rows: drinkRows,
+        totalAmount: totalDrinkAmount,
         note: formData.note || '',
         sentAt: new Date().toISOString(),
       };
@@ -427,11 +491,16 @@ const DrinkOrderFormApp = () => {
     let foodPayload = null;
     let foodRows = [];
     if (foodItems.length > 0) {
-      foodRows = foodItems.map(item => ({
-        details: item.meat ? `${item.name} ${item.meat}` : item.name,
-        count: String(item.qty),
-        condition: FOOD_MENU[item.category]?.label || '',
-      }));
+      foodRows = foodItems.map(item => {
+        const unitPrice = getFoodPrice(item);
+        return {
+          details: item.meat ? `${item.name} ${item.meat}` : item.name,
+          count: String(item.qty),
+          condition: FOOD_MENU[item.category]?.label || '',
+          unitPrice,
+          lineTotal: unitPrice != null ? unitPrice * item.qty : null,
+        };
+      });
       foodPayload = {
         form: 'FOOD_ORDER',
         responsiblePerson: formData.responsiblePerson || '',
@@ -441,16 +510,20 @@ const DrinkOrderFormApp = () => {
         orderDate: formData.orderDate || '',
         orderTime: formData.orderTime || '',
         rows: foodRows,
+        totalAmount: hasFoodWithoutPrice ? null : totalFoodAmount,
         note: foodNote || '',
         sentAt: new Date().toISOString(),
       };
     }
 
     // Create approval workflow — one combined if both, otherwise single
+    let workflowItemId = null;
+    let combinedFormType = 'DRINK_ORDER';
     try {
       if (drinkPayload && foodPayload) {
-        await createApprovalWorkflowRequest({
-          topic: 'เอกสารสั่งเครื่องดื่มและอาหาร รอเซ็นอนุมัติ',
+        combinedFormType = 'DRINK_FOOD_ORDER';
+        workflowItemId = await createApprovalWorkflowRequest({
+          topic: 'เอกสารสั่งเครื่องดื่มและอาหาร - GA รับออเดอร์',
           requesterId: drinkPayload.employeeId || '-',
           requesterName: drinkPayload.responsiblePerson || '-',
           requesterDepartment: drinkPayload.department || '',
@@ -463,14 +536,17 @@ const DrinkOrderFormApp = () => {
             orderTime: drinkPayload.orderTime,
             drinkRows,
             drinkNote: drinkPayload.note,
+            drinkTotalAmount: drinkPayload.totalAmount,
             foodRows,
             foodNote: foodPayload.note,
+            foodTotalAmount: foodPayload.totalAmount,
             ordererSign: formData.ordererSign || '',
           },
         });
       } else if (drinkPayload) {
-        await createApprovalWorkflowRequest({
-          topic: 'เอกสารสั่งเครื่องดื่ม รอเซ็นอนุมัติ',
+        combinedFormType = 'DRINK_ORDER';
+        workflowItemId = await createApprovalWorkflowRequest({
+          topic: 'เอกสารสั่งเครื่องดื่ม - GA รับออเดอร์',
           requesterId: drinkPayload.employeeId || '-',
           requesterName: drinkPayload.responsiblePerson || '-',
           requesterDepartment: drinkPayload.department || '',
@@ -483,12 +559,14 @@ const DrinkOrderFormApp = () => {
             orderTime: drinkPayload.orderTime,
             note: drinkPayload.note,
             rows: drinkRows,
+            totalAmount: drinkPayload.totalAmount,
             ordererSign: formData.ordererSign || '',
           },
         });
       } else if (foodPayload) {
-        await createApprovalWorkflowRequest({
-          topic: 'เอกสารสั่งอาหาร รอเซ็นอนุมัติ',
+        combinedFormType = 'FOOD_ORDER';
+        workflowItemId = await createApprovalWorkflowRequest({
+          topic: 'เอกสารสั่งอาหาร - GA รับออเดอร์',
           requesterId: foodPayload.employeeId || '-',
           requesterName: foodPayload.responsiblePerson || '-',
           requesterDepartment: foodPayload.department || '',
@@ -501,6 +579,7 @@ const DrinkOrderFormApp = () => {
             orderTime: foodPayload.orderTime,
             note: foodPayload.note,
             rows: foodRows,
+            totalAmount: foodPayload.totalAmount,
             ordererSign: formData.ordererSign || '',
           },
         });
@@ -512,19 +591,42 @@ const DrinkOrderFormApp = () => {
     const foodForPrint = foodPayload ? { ...foodPayload, ordererSign: formData.ordererSign || '' } : null;
     printCombinedOrder(drinkForPrint, foodForPrint);
 
-    // Send email
-    const headEmail = await getHeadEmail(formData.department);
-    if (headEmail) {
+    // Build email data — รวม drink + food เข้าเป็น payload เดียว
+    const approveUrl = workflowItemId ? buildApproveUrl(workflowItemId) : '';
+    const emailData = combinedFormType === 'DRINK_FOOD_ORDER'
+      ? {
+          responsiblePerson: formData.responsiblePerson,
+          employeeId: formData.employeeId,
+          department: formData.department,
+          orderDate: formData.orderDate,
+          orderTime: formData.orderTime,
+          drinkRows,
+          drinkTotalAmount: drinkPayload?.totalAmount,
+          foodRows,
+          foodTotalAmount: foodPayload?.totalAmount,
+        }
+      : (drinkPayload || foodPayload);
+
+    // Decide subject
+    const subject = combinedFormType === 'DRINK_FOOD_ORDER'
+      ? `[SOC] ออเดอร์เครื่องดื่ม+อาหาร - ${formData.responsiblePerson || '-'}`
+      : combinedFormType === 'DRINK_ORDER'
+        ? `[SOC] ออเดอร์เครื่องดื่ม - ${formData.responsiblePerson || '-'}`
+        : `[SOC] ออเดอร์อาหาร - ${formData.responsiblePerson || '-'}`;
+
+    // Send email → GA โดยตรง (ไม่ผ่านหัวหน้า)
+    const gaEmail = SPECIAL_EMAILS.GA;
+    if (gaEmail) {
       await copyHtmlAndOpenOutlook({
-        to: headEmail,
-        subject: `[SOC] เอกสารสั่งเครื่องดื่มและอาหาร รอเซ็นอนุมัติ - ${formData.responsiblePerson || '-'}`,
-        formType: 'DRINK_ORDER',
-        data: drinkPayload || foodPayload,
-        approveUrl: '',
+        to: gaEmail,
+        subject,
+        formType: combinedFormType,
+        data: emailData,
+        approveUrl,
         requesterSign: formData.ordererSign,
       });
     } else {
-      alert(`ส่งเอกสารเรียบร้อย!\nปลายทาง: ${head.name}`);
+      alert('ส่งเอกสารเรียบร้อย! / Submitted!\nปลายทาง / To: GA');
     }
   };
 
@@ -560,7 +662,7 @@ const DrinkOrderFormApp = () => {
           </div>
         </div>
         <div className="flex gap-2 w-full sm:w-auto">
-          <button onClick={handleBack} className="flex-1 sm:flex-none px-4 py-2.5 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50 font-bold text-sm">← กลับ</button>
+          <button onClick={handleBack} className="flex-1 sm:flex-none px-4 py-2.5 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50 font-bold text-sm">← กลับ / Back</button>
           <button
             onClick={handleSend}
             className="flex-1 sm:flex-none flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2.5 rounded-xl font-bold text-sm shadow-md"
@@ -639,7 +741,7 @@ const DrinkOrderFormApp = () => {
               <div>
                 <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">ชื่อผู้รับรอง</label>
                 <input type="text" value={formData.responsiblePerson} onChange={e => setFormData({...formData, responsiblePerson: e.target.value})}
-                  className="w-full p-3 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-amber-400 focus:border-amber-400 outline-none" placeholder="ชื่อ-นามสกุล" />
+                  className="w-full p-3 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-amber-400 focus:border-amber-400 outline-none" placeholder="ชื่อ-นามสกุล / Full name" />
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div>
@@ -650,7 +752,7 @@ const DrinkOrderFormApp = () => {
                 <div>
                   <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">แผนก</label>
                   <input type="text" value={formData.department} onChange={e => setFormData({...formData, department: e.target.value})}
-                    className="w-full p-3 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-amber-400 outline-none" placeholder="แผนก" />
+                    className="w-full p-3 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-amber-400 outline-none" placeholder="แผนก / Department" />
                 </div>
               </div>
               <div className="grid grid-cols-2 gap-3">
@@ -668,7 +770,7 @@ const DrinkOrderFormApp = () => {
               <div>
                 <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">หมายเหตุ</label>
                 <textarea value={formData.note} onChange={e => setFormData({...formData, note: e.target.value})}
-                  className="w-full p-3 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-amber-400 outline-none resize-none h-16" placeholder="เพิ่มเติม..." />
+                  className="w-full p-3 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-amber-400 outline-none resize-none h-16" placeholder="เพิ่มเติม... / Additional notes..." />
               </div>
               <div>
                 <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">ลายเซ็นผู้สั่ง</label>
@@ -676,7 +778,7 @@ const DrinkOrderFormApp = () => {
                   <SignaturePad
                     onSave={(img) => setFormData({...formData, ordererSign: img})}
                     savedImage={formData.ordererSign}
-                    label="วาดลายเซ็นที่นี่"
+                    label="วาดลายเซ็นที่นี่ / Draw signature here"
                   />
                 </div>
               </div>
@@ -691,15 +793,18 @@ const DrinkOrderFormApp = () => {
               {orderItems.length === 0 ? (
                 <p className="text-slate-300 text-sm text-center py-6">เลือกเครื่องดื่มจากเมนูด้านขวา →</p>
               ) : (
+                <>
                 <div className="space-y-2 max-h-[400px] overflow-y-auto">
                   {orderItems.map(item => {
                     const c = catColors[item.category];
                     const cat = DRINK_MENU[item.category];
+                    const unitPrice = getDrinkPrice(item);
+                    const lineTotal = unitPrice * item.qty;
                     return (
                       <div key={item.id} className={`${c.bg} ${c.border} border rounded-xl p-3 flex items-center gap-3`}>
                         <div className="flex-1 min-w-0">
                           <p className="font-bold text-slate-800 text-sm truncate">{item.name}</p>
-                          <div className="flex items-center gap-2 mt-1">
+                          <div className="flex items-center gap-2 mt-1 flex-wrap">
                             <span className={`${c.badge} text-[10px] font-bold px-2 py-0.5 rounded-full`}>{cat.label}</span>
                             {cat.tempOptions.length > 1 ? (
                               <div className="flex rounded-lg overflow-hidden border border-slate-200 text-[10px]">
@@ -713,6 +818,9 @@ const DrinkOrderFormApp = () => {
                             ) : (
                               <span className="text-[10px] text-slate-400 font-bold">🧊 เย็น</span>
                             )}
+                            <span className="text-[10px] font-bold text-amber-700 bg-white/70 px-2 py-0.5 rounded-full border border-amber-200">
+                              ฿{unitPrice} × {item.qty} = ฿{lineTotal}
+                            </span>
                           </div>
                         </div>
                         <div className="flex items-center gap-1.5 shrink-0">
@@ -734,6 +842,12 @@ const DrinkOrderFormApp = () => {
                     );
                   })}
                 </div>
+                {/* Grand total */}
+                <div className="mt-3 pt-3 border-t border-slate-200 flex items-center justify-between">
+                  <span className="text-sm font-bold text-slate-600">💰 ยอดรวม</span>
+                  <span className="text-xl font-black text-amber-600">฿{totalDrinkAmount.toLocaleString()}</span>
+                </div>
+                </>
               )}
             </div>
           </div>
@@ -756,17 +870,25 @@ const DrinkOrderFormApp = () => {
               {/* Menu Items */}
               <div className="p-4">
                 <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                  {DRINK_MENU[activeCategory].items.map(itemName => {
+                  {DRINK_MENU[activeCategory].items.map(itemDef => {
+                    const itemName = itemDef.name;
                     const alreadyOrdered = orderItems.filter(o => o.name === itemName && o.category === activeCategory);
                     const totalQty = alreadyOrdered.reduce((s, o) => s + o.qty, 0);
                     const c = catColors[activeCategory];
+                    const cat = DRINK_MENU[activeCategory];
+                    const priceLabel = cat.tempOptions.length > 1
+                      ? `ร้อน ฿${itemDef.hot} / เย็น ฿${itemDef.iced}`
+                      : `฿${itemDef.iced}`;
                     return (
                       <button key={itemName} onClick={() => addItem(itemName, activeCategory)}
                         className={`relative p-4 rounded-2xl border-2 ${c.border} ${c.bg} hover:shadow-md transition-all text-left group active:scale-95`}>
-                        <p className="text-3xl mb-2">{DRINK_MENU[activeCategory].icon}</p>
+                        <p className="text-3xl mb-2">{cat.icon}</p>
                         <p className={`font-bold text-sm ${c.text}`}>{itemName}</p>
                         <p className="text-[10px] text-slate-400 mt-0.5">
-                          {DRINK_MENU[activeCategory].tempOptions.join(' / ')}
+                          {cat.tempOptions.join(' / ')}
+                        </p>
+                        <p className={`text-[11px] font-black ${c.text} mt-1`}>
+                          💰 {priceLabel}
                         </p>
                         {totalQty > 0 && (
                           <span className="absolute top-2 right-2 w-6 h-6 bg-red-500 text-white rounded-full flex items-center justify-center text-xs font-black shadow-sm">
@@ -799,7 +921,7 @@ const DrinkOrderFormApp = () => {
                   <div>
                     <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">ชื่อผู้รับรอง</label>
                     <input type="text" value={formData.responsiblePerson} onChange={e => setFormData({...formData, responsiblePerson: e.target.value})}
-                      className="w-full p-3 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-orange-400 focus:border-orange-400 outline-none" placeholder="ชื่อ-นามสกุล" />
+                      className="w-full p-3 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-orange-400 focus:border-orange-400 outline-none" placeholder="ชื่อ-นามสกุล / Full name" />
                   </div>
                   <div className="grid grid-cols-2 gap-3">
                     <div>
@@ -810,7 +932,7 @@ const DrinkOrderFormApp = () => {
                     <div>
                       <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">แผนก</label>
                       <input type="text" value={formData.department} onChange={e => setFormData({...formData, department: e.target.value})}
-                        className="w-full p-3 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-orange-400 outline-none" placeholder="แผนก" />
+                        className="w-full p-3 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-orange-400 outline-none" placeholder="แผนก / Department" />
                     </div>
                   </div>
                   <div className="grid grid-cols-2 gap-3">
@@ -828,7 +950,7 @@ const DrinkOrderFormApp = () => {
                   <div>
                     <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">หมายเหตุ</label>
                     <textarea value={foodNote} onChange={e => setFoodNote(e.target.value)}
-                      className="w-full p-3 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-orange-400 outline-none resize-none h-16" placeholder="เช่น อาหารฮาลาล, แพ้อาหาร..." />
+                      className="w-full p-3 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-orange-400 outline-none resize-none h-16" placeholder="เช่น อาหารฮาลาล, แพ้อาหาร... / e.g. Halal, allergies..." />
                   </div>
                   <div>
                     <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">ลายเซ็นผู้สั่ง</label>
@@ -836,7 +958,7 @@ const DrinkOrderFormApp = () => {
                       <SignaturePad
                         onSave={(img) => setFormData({...formData, ordererSign: img})}
                         savedImage={formData.ordererSign}
-                        label="วาดลายเซ็นที่นี่"
+                        label="วาดลายเซ็นที่นี่ / Draw signature here"
                       />
                     </div>
                   </div>
@@ -852,11 +974,14 @@ const DrinkOrderFormApp = () => {
                 {foodItems.length === 0 ? (
                   <p className="text-slate-300 text-sm text-center py-6">เลือกอาหารจากเมนูด้านขวา →</p>
                 ) : (
+                  <>
                   <div className="space-y-2 max-h-[400px] overflow-y-auto">
                     {foodItems.map(item => {
                       const fc = foodCatColors[item.category];
                       const cat = FOOD_MENU[item.category];
                       const itemDef = cat?.items.find(i => i.name === item.name);
+                      const unitPrice = getFoodPrice(item);
+                      const lineTotal = (unitPrice || 0) * item.qty;
                       return (
                         <div key={item.id} className={`${fc.bg} ${fc.border} border rounded-xl p-3 flex items-center gap-3`}>
                           <div className="flex-1 min-w-0">
@@ -874,6 +999,15 @@ const DrinkOrderFormApp = () => {
                                     </button>
                                   ))}
                                 </div>
+                              )}
+                              {unitPrice != null ? (
+                                <span className="text-[10px] font-bold text-orange-700 bg-white/70 px-2 py-0.5 rounded-full border border-orange-200">
+                                  ฿{unitPrice} × {item.qty} = ฿{lineTotal}
+                                </span>
+                              ) : (
+                                <span className="text-[10px] font-bold text-slate-400 bg-white/70 px-2 py-0.5 rounded-full border border-slate-200">
+                                  💬 รอกำหนดราคา
+                                </span>
                               )}
                             </div>
                           </div>
@@ -896,6 +1030,16 @@ const DrinkOrderFormApp = () => {
                       );
                     })}
                   </div>
+                  {/* Grand total (ถ้ามีราคาครบ) */}
+                  <div className="mt-3 pt-3 border-t border-slate-200 flex items-center justify-between">
+                    <span className="text-sm font-bold text-slate-600">💰 ยอดรวม</span>
+                    {hasFoodWithoutPrice ? (
+                      <span className="text-xs font-bold text-slate-400">GA กำหนดราคาภายหลัง</span>
+                    ) : (
+                      <span className="text-xl font-black text-orange-600">฿{totalFoodAmount.toLocaleString()}</span>
+                    )}
+                  </div>
+                  </>
                 )}
 
                 {/* หมายเหตุ — ใน both mode */}
@@ -903,7 +1047,7 @@ const DrinkOrderFormApp = () => {
                   <div className="mt-3 pt-3 border-t border-orange-100">
                     <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">หมายเหตุอาหาร</label>
                     <textarea value={foodNote} onChange={e => setFoodNote(e.target.value)}
-                      className="w-full p-3 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-orange-300 outline-none resize-none h-16" placeholder="เช่น อาหารฮาลาล, แพ้อาหาร..." />
+                      className="w-full p-3 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-orange-300 outline-none resize-none h-16" placeholder="เช่น อาหารฮาลาล, แพ้อาหาร... / e.g. Halal, allergies..." />
                   </div>
                 )}
               </div>
@@ -939,6 +1083,9 @@ const DrinkOrderFormApp = () => {
                           <p className="text-[10px] text-slate-400 mt-0.5">
                             {itemDef.meatOptions ? `เลือก: ${itemDef.meatOptions.join(' / ')}` : '-'}
                           </p>
+                          {itemDef.price != null && (
+                            <p className={`text-[11px] font-black ${fc.text} mt-1`}>💰 ฿{itemDef.price}</p>
+                          )}
                           {totalQty > 0 && (
                             <span className="absolute top-2 right-2 w-6 h-6 bg-red-500 text-white rounded-full flex items-center justify-center text-xs font-black shadow-sm">
                               {totalQty}
@@ -975,7 +1122,7 @@ const DrinkOrderFormApp = () => {
                 <div>
                   <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">ชื่อผู้รับรอง</label>
                   <input type="text" value={formData.responsiblePerson} onChange={e => setFormData({...formData, responsiblePerson: e.target.value})}
-                    className="w-full p-3 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-purple-400 outline-none" placeholder="ชื่อ-นามสกุล" />
+                    className="w-full p-3 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-purple-400 outline-none" placeholder="ชื่อ-นามสกุล / Full name" />
                 </div>
                 <div className="grid grid-cols-2 gap-3">
                   <div>
@@ -986,7 +1133,7 @@ const DrinkOrderFormApp = () => {
                   <div>
                     <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">แผนก</label>
                     <input type="text" value={formData.department} onChange={e => setFormData({...formData, department: e.target.value})}
-                      className="w-full p-3 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-purple-400 outline-none" placeholder="แผนก" />
+                      className="w-full p-3 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-purple-400 outline-none" placeholder="แผนก / Department" />
                   </div>
                 </div>
                 <div className="grid grid-cols-2 gap-3">
@@ -1003,7 +1150,7 @@ const DrinkOrderFormApp = () => {
                 <div>
                   <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">หมายเหตุ</label>
                   <textarea value={formData.note} onChange={e => setFormData({...formData, note: e.target.value})}
-                    className="w-full p-3 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-purple-400 outline-none resize-none h-16" placeholder="เพิ่มเติม..." />
+                    className="w-full p-3 border border-slate-200 rounded-xl text-sm focus:ring-2 focus:ring-purple-400 outline-none resize-none h-16" placeholder="เพิ่มเติม... / Additional notes..." />
                 </div>
                 <div>
                   <label className="text-[10px] font-bold text-slate-400 uppercase block mb-1">ลายเซ็นผู้สั่ง</label>
@@ -1011,7 +1158,7 @@ const DrinkOrderFormApp = () => {
                     <SignaturePad
                       onSave={(img) => setFormData({...formData, ordererSign: img})}
                       savedImage={formData.ordererSign}
-                      label="วาดลายเซ็นที่นี่"
+                      label="วาดลายเซ็นที่นี่ / Draw signature here"
                     />
                   </div>
                 </div>
@@ -1026,12 +1173,15 @@ const DrinkOrderFormApp = () => {
                 {allOrderedItems.length === 0 ? (
                   <p className="text-slate-300 text-sm text-center py-6">เลือกจากเมนูด้านขวา →</p>
                 ) : (
+                  <>
                   <div className="space-y-2 max-h-[400px] overflow-y-auto">
                     {allOrderedItems.map(item => {
                       const isDrink = item.itemType === 'drink';
                       const c = isDrink ? catColors[item.category] : foodCatColors[item.category];
                       const catDef = isDrink ? DRINK_MENU[item.category] : FOOD_MENU[item.category];
                       const itemDef = !isDrink ? catDef?.items.find(i => i.name === item.name) : null;
+                      const unitPrice = isDrink ? getDrinkPrice(item) : getFoodPrice(item);
+                      const lineTotal = unitPrice != null ? unitPrice * item.qty : null;
                       return (
                         <div key={item.id} className={`${c?.bg || 'bg-slate-50'} ${c?.border || 'border-slate-200'} border rounded-xl p-3 flex items-center gap-3`}>
                           <div className="flex-1 min-w-0">
@@ -1060,6 +1210,15 @@ const DrinkOrderFormApp = () => {
                                   ))}
                                 </div>
                               )}
+                              {lineTotal != null ? (
+                                <span className="text-[10px] font-bold text-purple-700 bg-white/70 px-2 py-0.5 rounded-full border border-purple-200">
+                                  ฿{unitPrice} × {item.qty} = ฿{lineTotal}
+                                </span>
+                              ) : (
+                                <span className="text-[10px] font-bold text-slate-400 bg-white/70 px-2 py-0.5 rounded-full border border-slate-200">
+                                  💬 รอกำหนดราคา
+                                </span>
+                              )}
                             </div>
                           </div>
                           <div className="flex items-center gap-1.5 shrink-0">
@@ -1075,6 +1234,32 @@ const DrinkOrderFormApp = () => {
                       );
                     })}
                   </div>
+                  {/* Grand total รวม drink + food */}
+                  <div className="mt-3 pt-3 border-t border-slate-200 space-y-1">
+                    {totalDrinkAmount > 0 && (
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-slate-500">☕ เครื่องดื่ม</span>
+                        <span className="font-bold text-amber-600">฿{totalDrinkAmount.toLocaleString()}</span>
+                      </div>
+                    )}
+                    {totalFoodAmount > 0 && (
+                      <div className="flex items-center justify-between text-xs">
+                        <span className="text-slate-500">🍱 อาหาร</span>
+                        <span className="font-bold text-orange-600">
+                          {hasFoodWithoutPrice ? <span className="text-slate-400 italic">รอกำหนด</span> : `฿${totalFoodAmount.toLocaleString()}`}
+                        </span>
+                      </div>
+                    )}
+                    <div className="flex items-center justify-between pt-2 border-t border-slate-200">
+                      <span className="text-sm font-bold text-slate-600">💰 ยอดรวม</span>
+                      {hasFoodWithoutPrice && totalFoodAmount === 0 ? (
+                        <span className="text-xl font-black text-purple-600">฿{totalDrinkAmount.toLocaleString()}<span className="text-xs text-slate-400 ml-1">+ อาหาร</span></span>
+                      ) : (
+                        <span className="text-xl font-black text-purple-600">฿{(totalDrinkAmount + totalFoodAmount).toLocaleString()}</span>
+                      )}
+                    </div>
+                  </div>
+                  </>
                 )}
               </div>
             </div>
@@ -1095,16 +1280,22 @@ const DrinkOrderFormApp = () => {
                 </div>
                 <div className="p-4">
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-                    {DRINK_MENU[activeCategory].items.map(itemName => {
+                    {DRINK_MENU[activeCategory].items.map(itemDef => {
+                      const itemName = itemDef.name;
                       const alreadyOrdered = orderItems.filter(o => o.name === itemName && o.category === activeCategory);
                       const totalQty = alreadyOrdered.reduce((s, o) => s + o.qty, 0);
                       const c = catColors[activeCategory];
+                      const cat = DRINK_MENU[activeCategory];
+                      const priceLabel = cat.tempOptions.length > 1
+                        ? `ร้อน ฿${itemDef.hot} / เย็น ฿${itemDef.iced}`
+                        : `฿${itemDef.iced}`;
                       return (
                         <button key={itemName} onClick={() => addItem(itemName, activeCategory)}
                           className={`relative p-4 rounded-2xl border-2 ${c.border} ${c.bg} hover:shadow-md transition-all text-left group active:scale-95`}>
-                          <p className="text-3xl mb-2">{DRINK_MENU[activeCategory].icon}</p>
+                          <p className="text-3xl mb-2">{cat.icon}</p>
                           <p className={`font-bold text-sm ${c.text}`}>{itemName}</p>
-                          <p className="text-[10px] text-slate-400 mt-0.5">{DRINK_MENU[activeCategory].tempOptions.join(' / ')}</p>
+                          <p className="text-[10px] text-slate-400 mt-0.5">{cat.tempOptions.join(' / ')}</p>
+                          <p className={`text-[11px] font-black ${c.text} mt-1`}>💰 {priceLabel}</p>
                           {totalQty > 0 && <span className="absolute top-2 right-2 w-6 h-6 bg-red-500 text-white rounded-full flex items-center justify-center text-xs font-black shadow-sm">{totalQty}</span>}
                           <div className={`absolute bottom-2 right-2 w-7 h-7 ${c.item} text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition shadow-sm`}><Plus size={16} /></div>
                         </button>
@@ -1138,6 +1329,7 @@ const DrinkOrderFormApp = () => {
                           <p className="text-3xl mb-2">{FOOD_MENU[activeFoodCategory].icon}</p>
                           <p className={`font-bold text-sm ${fc.text}`}>{itemDef.name}</p>
                           <p className="text-[10px] text-slate-400 mt-0.5">{itemDef.meatOptions ? `เลือก: ${itemDef.meatOptions.join(' / ')}` : '-'}</p>
+                          {itemDef.price != null && <p className={`text-[11px] font-black ${fc.text} mt-1`}>💰 ฿{itemDef.price}</p>}
                           {totalQty > 0 && <span className="absolute top-2 right-2 w-6 h-6 bg-red-500 text-white rounded-full flex items-center justify-center text-xs font-black shadow-sm">{totalQty}</span>}
                           <div className={`absolute bottom-2 right-2 w-7 h-7 ${fc.item} text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition shadow-sm`}><Plus size={16} /></div>
                         </button>

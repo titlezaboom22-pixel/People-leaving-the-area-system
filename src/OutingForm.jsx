@@ -3,6 +3,7 @@ import { Printer, FileText, Eraser, CheckCircle2, Upload, PenTool, Send } from '
 import { createApprovalWorkflowRequest } from './approvalNotifications';
 import { getHeadEmail, copyHtmlAndOpenOutlook, buildApproveUrl } from './emailHelper';
 import { printOutingRequest } from './printDocument';
+import ApproverPicker from './ApproverPicker';
 
 // --- ส่วนประกอบสำหรับวาดและอัปโหลดลายเซ็น (Advanced Signature Pad) ---
 const SignaturePad = ({ onSave, savedImage, label }) => {
@@ -116,14 +117,14 @@ const SignaturePad = ({ onSave, savedImage, label }) => {
 
         {!isDrawing && isEmpty && (
           <div className="absolute inset-0 flex items-center justify-center text-gray-300 pointer-events-none text-[10px] italic print:hidden">
-            {label || 'คลิกเพื่อวาดหรืออัปโหลดลายเซ็น'}
+            {label || 'คลิกเพื่อวาดหรืออัปโหลดลายเซ็น / Click to draw or upload signature'}
           </div>
         )}
 
         {/* Floating Controls for UI (Hidden on Print) */}
         <div className="absolute top-0 right-0 flex gap-1 opacity-0 group-hover:opacity-100 transition print:hidden bg-white/80 rounded-bl-lg shadow-sm z-10">
           {!isEmpty && (
-            <button type="button" onClick={clear} className="p-1 text-red-500 hover:bg-red-50" title="ล้าง">
+            <button type="button" onClick={clear} className="p-1 text-red-500 hover:bg-red-50" title="ล้าง / Clear">
               <Eraser size={14} />
             </button>
           )}
@@ -193,7 +194,14 @@ const OutingFormApp = () => {
     }
   };
 
-  const handleSend = async () => {
+  const [showApproverPicker, setShowApproverPicker] = useState(false);
+
+  const handleSend = () => {
+    setShowApproverPicker(true);
+  };
+
+  const performSend = async (picked) => {
+    setShowApproverPicker(false);
     const payload = {
       form: 'OUTING_REQUEST',
       date: formData.date || '',
@@ -231,6 +239,9 @@ const OutingFormApp = () => {
         requesterName: formData.managerName || '-',
         requesterDepartment: formData.department || '',
         sourceForm: 'OUTING_REQUEST',
+        targetUserId: picked?.id || null,
+        targetUserEmail: picked?.email || null,
+        targetUserName: picked?.displayName || null,
         requestPayload: {
           date: payload.date,
           type: payload.type,
@@ -253,7 +264,7 @@ const OutingFormApp = () => {
     }
     printOutingRequest(payload);
     const approveUrl = workflowItemId ? buildApproveUrl(workflowItemId) : '';
-    const headEmail = await getHeadEmail(formData.department || payload.department || '');
+    const headEmail = picked?.email || await getHeadEmail(formData.department || payload.department || '');
     if (headEmail) {
       await copyHtmlAndOpenOutlook({
         to: headEmail,
@@ -264,12 +275,18 @@ const OutingFormApp = () => {
         requesterSign: formData.requesterSign,
       });
     } else {
-      alert(`ส่งเอกสารเรียบร้อย!`);
+      alert(`ส่งเอกสารเรียบร้อย!\nDocument submitted successfully!`);
     }
   };
 
   return (
     <div className="min-h-screen bg-slate-100 p-4 md:p-8 font-serif overflow-x-auto">
+      <ApproverPicker
+        open={showApproverPicker}
+        department={formData.department}
+        onPick={performSend}
+        onClose={() => setShowApproverPicker(false)}
+      />
       {/* Menu Bar (Hidden on Print) */}
       <div className="max-w-[850px] mx-auto mb-6 flex flex-wrap justify-between items-center bg-white p-4 rounded-xl shadow-md border border-blue-100 print:hidden">
         <div className="flex items-center gap-3">
@@ -277,7 +294,7 @@ const OutingFormApp = () => {
             <FileText size={24} />
           </div>
           <div>
-            <h1 className="text-lg font-bold text-slate-800 leading-none">ใบขออนุญาตออกนอกสถานที่</h1>
+            <h1 className="text-lg font-bold text-slate-800 leading-none">ใบขออนุญาตออกนอกสถานที่ / Outing Request</h1>
             <p className="text-[10px] text-slate-500 uppercase tracking-widest mt-1 font-sans">
               Digital Signature Ready
             </p>
@@ -289,14 +306,14 @@ const OutingFormApp = () => {
             onClick={handleBack}
             className="flex items-center gap-2 px-4 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 font-sans font-semibold text-xs tracking-wide"
           >
-            ← กลับหน้าหลัก
+            ← กลับหน้าหลัก / Back
           </button>
           <button
             type="button"
             onClick={handleSend}
             className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2 rounded-lg font-bold transition-all shadow-md active:scale-95"
           >
-            <Send size={18} /> ส่งให้
+            <Send size={18} /> ส่งให้ / Send
           </button>
           <button
             onClick={handlePrint}
@@ -440,7 +457,7 @@ const OutingFormApp = () => {
                     className="w-full border-none focus:outline-none text-center bg-transparent text-[11px] italic placeholder:text-gray-300"
                     value={row.acknowledgeSign}
                     onChange={(e) => updateRow(row.id, 'acknowledgeSign', e.target.value)}
-                    placeholder="(ลงชื่อ)"
+                    placeholder="(ลงชื่อ / Sign)"
                   />
                 </td>
               </tr>
@@ -457,14 +474,14 @@ const OutingFormApp = () => {
                 <span className="font-bold mb-1">หน.แผนก / ผู้จัดการฝ่าย:</span>
                 <div className="px-4">
                   <SignaturePad
-                    label="วาดหรืออัปโหลดลายเซ็นหัวหน้า"
+                    label="วาดหรืออัปโหลดลายเซ็นหัวหน้า / Draw or upload head's signature"
                     savedImage={formData.managerSign}
                     onSave={(img) => setFormData({ ...formData, managerSign: img })}
                   />
                   <input
                     type="text"
                     className="w-full border-none focus:outline-none text-center mt-1 italic text-sm"
-                    placeholder="(พิมพ์ชื่อ-นามสกุล หัวหน้า)"
+                    placeholder="(พิมพ์ชื่อ-นามสกุล หัวหน้า / Head's full name)"
                     value={formData.managerName}
                     onChange={(e) => setFormData({ ...formData, managerName: e.target.value })}
                   />
@@ -481,7 +498,7 @@ const OutingFormApp = () => {
                     value={formData.note}
                     onChange={(e) => setFormData({ ...formData, note: e.target.value })}
                     rows={2}
-                    placeholder="ระบุเหตุผลหรือหมายเหตุอื่นๆ..."
+                    placeholder="ระบุเหตุผลหรือหมายเหตุอื่นๆ... / Reason or other notes..."
                   />
                 </div>
               </div>
@@ -493,7 +510,7 @@ const OutingFormApp = () => {
                 <span className="font-bold mb-1">อนุมัติโดย:</span>
                 <div className="px-4">
                   <SignaturePad
-                    label="ลายเซ็นผู้อนุมัติ (ส่วนงานบริหาร)"
+                    label="ลายเซ็นผู้อนุมัติ (ส่วนงานบริหาร) / Manager's Signature"
                     savedImage={formData.approverSign}
                     onSave={(img) => setFormData({ ...formData, approverSign: img })}
                   />
@@ -551,7 +568,7 @@ const OutingFormApp = () => {
               <div className="flex flex-col items-center min-w-[150px]">
                 <div className="w-full">
                   <SignaturePad
-                    label="ลงลายเซ็นผู้ขอ"
+                    label="ลงลายเซ็นผู้ขอ / Requester's Signature"
                     savedImage={formData.requesterSign}
                     onSave={(img) => setFormData({ ...formData, requesterSign: img })}
                   />

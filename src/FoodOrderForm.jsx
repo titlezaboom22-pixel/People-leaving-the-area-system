@@ -249,7 +249,7 @@ const FoodOrderFormApp = () => {
         requesterSign: formData.ordererSign,
       });
     } else {
-      alert(`ส่งเอกสารเรียบร้อย!\nปลายทาง: ${head.name}`);
+      alert(`ส่งเอกสารเรียบร้อย! / Submitted!\nปลายทาง / To: ${head.name}`);
     }
   };
 
@@ -262,7 +262,7 @@ const FoodOrderFormApp = () => {
             <FileText size={24} />
           </div>
           <div>
-            <h1 className="text-lg font-bold text-slate-800 leading-none">แบบการสั่งอาหารเพื่อลูกค้า</h1>
+            <h1 className="text-lg font-bold text-slate-800 leading-none">แบบการสั่งอาหารเพื่อลูกค้า / Food Order for Customer</h1>
             <p className="text-[10px] text-slate-500 uppercase tracking-widest mt-1 font-sans tracking-tighter">
               Food Request for Customer / Visitor
             </p>
@@ -280,20 +280,20 @@ const FoodOrderFormApp = () => {
             }}
             className="flex items-center gap-2 px-4 py-2 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 font-sans font-semibold text-xs tracking-wide"
           >
-            ← กลับหน้าหลัก
+            ← กลับหน้าหลัก / Back
           </button>
           <button
             type="button"
             onClick={handleSend}
             className="flex items-center gap-2 bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-2 rounded-lg font-bold transition-all shadow-md active:scale-95"
           >
-            <Send size={18} /> ส่งให้
+            <Send size={18} /> ส่งให้ / Send
           </button>
           <button
             onClick={() => window.print()}
             className="flex items-center gap-2 bg-slate-800 hover:bg-black text-white px-6 py-2 rounded-lg font-bold transition-all shadow-md active:scale-95"
           >
-            <Printer size={18} /> พิมพ์ / PDF
+            <Printer size={18} /> พิมพ์ / Print PDF
           </button>
         </div>
       </div>

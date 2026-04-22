@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { collection, onSnapshot } from 'firebase/firestore';
 import { db, firebaseReady, appId } from './firebase';
-import { Bell, BellRing, X, Car, Clock, Volume2, VolumeX } from 'lucide-react';
+import { Bell, BellRing, X, Car, Clock, Volume2, VolumeX, CheckCircle2 } from 'lucide-react';
+import ReturnVehicleModal from './ReturnVehicleModal';
 
 // ========== CONFIG ==========
 const ALERT_MINUTES_BEFORE = 10; // แจ้งเตือนก่อนหมดเวลา 10 นาที
@@ -42,30 +43,37 @@ export default function VehicleTimeAlert({ userRole, requesterId }) {
 
   // Create audio element for alert sound
   useEffect(() => {
-    // Use a simple beep via AudioContext
+    // SIREN: สลับความถี่ต่ำ-สูง ให้ดังเหมือน siren รถพยาบาล/ตำรวจ
     audioRef.current = {
-      play: () => {
+      play: (loud = false) => {
         if (!soundEnabled) return;
         try {
           const ctx = new (window.AudioContext || window.webkitAudioContext)();
-          // Play 3 beeps
-          [0, 0.3, 0.6].forEach(delay => {
-            const osc = ctx.createOscillator();
-            const gain = ctx.createGain();
-            osc.connect(gain);
-            gain.connect(ctx.destination);
-            osc.frequency.value = 880; // A5 note
-            osc.type = 'sine';
-            gain.gain.value = 0.3;
-            osc.start(ctx.currentTime + delay);
-            osc.stop(ctx.currentTime + delay + 0.15);
-          });
+          const gain = ctx.createGain();
+          gain.connect(ctx.destination);
+          gain.gain.value = loud ? 0.55 : 0.3; // overdue ดังกว่า pre-alert
+
+          const osc = ctx.createOscillator();
+          osc.type = 'square'; // คม/ดัง กว่า sine
+          osc.connect(gain);
+          // Siren: สลับ 600 ↔ 1000 Hz ทุก 0.25s, รวม 3 วินาที
+          const cycles = loud ? 12 : 6;
+          const dur = 0.25;
+          const now = ctx.currentTime;
+          for (let i = 0; i < cycles; i++) {
+            osc.frequency.setValueAtTime(i % 2 === 0 ? 1000 : 600, now + i * dur);
+          }
+          osc.start(now);
+          osc.stop(now + cycles * dur);
         } catch (e) {
           console.warn('Audio play failed:', e);
         }
       }
     };
   }, [soundEnabled]);
+
+  // Modal state
+  const [returnModalBooking, setReturnModalBooking] = useState(null);
 
   // Load active vehicle bookings from Firestore
   useEffect(() => {
@@ -168,7 +176,7 @@ export default function VehicleTimeAlert({ userRole, requesterId }) {
 
         setAlerts(prev => [alertData, ...prev]);
         setShowPanel(true);
-        audioRef.current?.play();
+        audioRef.current?.play(true); // loud=true สำหรับ overdue
 
         if ('Notification' in window && Notification.permission === 'granted') {
           new Notification('🚨 รถเลยเวลาแล้ว!', {
@@ -293,12 +301,33 @@ export default function VehicleTimeAlert({ userRole, requesterId }) {
                       : `⏰ เหลืออีก ${alert.minutesLeft} นาที`
                     }
                   </div>
+                  {/* ปุ่มรถกลับแล้ว — กดเพื่อบันทึกเลขไมล์ + รูป */}
+                  <button
+                    onClick={() => {
+                      const b = activeBookings.find((bk) => bk.id === alert.bookingId);
+                      if (b) setReturnModalBooking(b);
+                    }}
+                    className="mt-2 w-full flex items-center justify-center gap-1.5 bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-black py-2 rounded-lg transition active:scale-95"
+                  >
+                    <CheckCircle2 size={14} /> รถกลับแล้ว + บันทึกเลขไมล์
+                  </button>
                 </div>
               ))
             )}
           </div>
         </div>
       )}
+
+      <ReturnVehicleModal
+        open={!!returnModalBooking}
+        booking={returnModalBooking}
+        currentUserId={requesterId || userRole}
+        onClose={() => setReturnModalBooking(null)}
+        onSaved={(b) => {
+          // ล้าง alert ของ booking นี้ออกจากลิสต์
+          setAlerts(prev => prev.filter(a => a.bookingId !== b.id));
+        }}
+      />
     </>
   );
 }
