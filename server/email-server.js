@@ -6,15 +6,18 @@
  *   2. รัน: node server/email-server.js
  *   3. Server จะรันที่ port 3001
  *
- * ทดสอบ:
- *   curl -X POST http://localhost:3001/api/send-email \
- *     -H "Content-Type: application/json" \
- *     -d '{"to":"test@test.com","subject":"test","body":"hello"}'
+ * Security:
+ *   - Rate limit per IP (general + email + public-form)
+ *   - API key (x-api-key header) — optional (set env.API_KEY)
+ *   - Recipient domain allowlist (@tbkk.co.th by default)
+ *   - Request size limits
+ *   - Abuse logging to Firestore (security_alerts/)
  */
 
 import express from 'express';
 import cors from 'cors';
 import nodemailer from 'nodemailer';
+import rateLimit from 'express-rate-limit';
 import { readFileSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -47,6 +50,14 @@ function loadEnv() {
 
 const env = loadEnv();
 const PORT = process.env.PORT || env.EMAIL_SERVER_PORT || 3001;
+
+// ========== Security Config ==========
+const API_KEY = env.API_KEY || '';
+const RECIPIENT_ALLOWLIST = (env.RECIPIENT_DOMAIN_ALLOWLIST || 'tbkk.co.th,tbk.co.th,anthropic.com')
+  .split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+const MAX_SUBJECT_LEN = 300;
+const MAX_BODY_LEN = 500_000; // 500 KB (HTML body)
+const MAX_RECIPIENTS = 20;
 
 // ตั้งค่า SMTP transporter — รองรับทั้ง .env และ Admin UI (runtime reload)
 let smtpConfig = {
@@ -85,8 +96,69 @@ function buildTransporter() {
 
 buildTransporter();
 
+// ========== Firestore REST helper (สำหรับ abuse log + SMTP config) ==========
+let cachedIdToken = null;
+let cachedIdTokenAt = 0;
+
+async function getFirestoreIdToken() {
+  const projectId = env.VITE_FIREBASE_PROJECT_ID;
+  const apiKey = env.VITE_FIREBASE_API_KEY;
+  if (!projectId || !apiKey) return null;
+  // Cache 45 min (tokens live 1 hour)
+  if (cachedIdToken && Date.now() - cachedIdTokenAt < 45 * 60 * 1000) return cachedIdToken;
+  try {
+    const res = await fetch(
+      `https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${apiKey}`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ returnSecureToken: true }) }
+    );
+    const j = await res.json();
+    if (j.idToken) {
+      cachedIdToken = j.idToken;
+      cachedIdTokenAt = Date.now();
+      return j.idToken;
+    }
+  } catch {}
+  return null;
+}
+
+// Log abuse attempts to Firestore `security_alerts` collection
+async function logAbuse(req, type, details = {}) {
+  const ip = (req.ip || req.headers['x-forwarded-for'] || '-').toString().split(',')[0].trim();
+  const ua = (req.headers['user-agent'] || '-').toString().slice(0, 300);
+  const origin = (req.headers.origin || '-').toString().slice(0, 200);
+  console.warn(`🚨 ABUSE [${type}] ip=${ip} path=${req.path} origin=${origin}`);
+  try {
+    const projectId = env.VITE_FIREBASE_PROJECT_ID;
+    const appId = env.VITE_APP_ID || 'visitor-soc-001';
+    if (!projectId) return;
+    const idToken = await getFirestoreIdToken();
+    if (!idToken) return;
+    const docPath = `artifacts/${appId}/public/data/security_alerts`;
+    const url = `https://firestore.googleapis.com/v1/projects/${projectId}/databases/(default)/documents/${docPath}`;
+    await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${idToken}` },
+      body: JSON.stringify({
+        fields: {
+          type: { stringValue: String(type).slice(0, 80) },
+          ip: { stringValue: ip.slice(0, 64) },
+          userAgent: { stringValue: ua },
+          origin: { stringValue: origin },
+          path: { stringValue: (req.path || '-').slice(0, 120) },
+          method: { stringValue: req.method || '-' },
+          details: { stringValue: JSON.stringify(details).slice(0, 800) },
+          at: { timestampValue: new Date().toISOString() },
+          resolved: { booleanValue: false },
+          severity: { stringValue: ['invalid-api-key', 'recipient-not-allowed', 'payload-too-large'].includes(type) ? 'high' : 'medium' },
+        },
+      }),
+    });
+  } catch (err) {
+    // non-blocking
+  }
+}
+
 // พยายามโหลด SMTP config จาก Firestore REST API (ถ้าตั้งค่าไว้)
-// ต้องมี VITE_FIREBASE_PROJECT_ID ใน .env และ Firestore rules ยอมให้ read anonymous
 async function loadSmtpFromFirestore() {
   const projectId = env.VITE_FIREBASE_PROJECT_ID;
   const apiKey = env.VITE_FIREBASE_API_KEY;
@@ -94,13 +166,7 @@ async function loadSmtpFromFirestore() {
   if (!projectId || !apiKey) return;
 
   try {
-    // Sign in anonymous ก่อน (ได้ idToken)
-    const signInRes = await fetch(
-      `https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=${apiKey}`,
-      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ returnSecureToken: true }) }
-    );
-    const signInJson = await signInRes.json();
-    const idToken = signInJson.idToken;
+    const idToken = await getFirestoreIdToken();
     if (!idToken) {
       console.log('ℹ️  ไม่สามารถ sign in anonymous เพื่อโหลด SMTP จาก Firestore (ข้ามไปใช้ .env)');
       return;
@@ -156,7 +222,9 @@ async function loadSmtpFromFirestore() {
 loadSmtpFromFirestore();
 
 const app = express();
-// CORS — อนุญาตเฉพาะ localhost + domain ของ TBKK (ความปลอดภัย)
+app.set('trust proxy', 1); // Render/Cloudflare/Proxy-aware IP
+
+// CORS — อนุญาตเฉพาะ localhost + domain ของ TBKK
 const ALLOWED_ORIGINS = [
   'http://localhost:3000',
   'http://localhost:5173',
@@ -165,17 +233,85 @@ const ALLOWED_ORIGINS = [
 ];
 app.use(cors({
   origin: (origin, cb) => {
-    // อนุญาต requests ไม่มี origin (curl, mobile apps, same-origin)
-    if (!origin) return cb(null, true);
+    if (!origin) return cb(null, true); // curl, mobile apps, same-origin
     if (ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
-    // log origin ที่ไม่รู้จัก — กรณีต้องเพิ่มในอนาคต
     console.warn(`⚠️ CORS blocked: ${origin}`);
     return cb(new Error('Not allowed by CORS'));
   },
 }));
 app.use(express.json({ limit: '5mb' }));
 
-// Health check
+// ========== Rate limiters ==========
+const generalLimiter = rateLimit({
+  windowMs: 60 * 1000,        // 1 นาที
+  max: 120,                    // 120 req/min/IP ทั่วไป (health + config)
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: 'Too many requests' },
+  handler: (req, res) => {
+    logAbuse(req, 'rate-limit-general', { limit: 120, window: '1min' });
+    res.status(429).json({ error: 'Too many requests — รอสักครู่' });
+  },
+});
+const emailLimiter = rateLimit({
+  windowMs: 60 * 1000,        // 1 นาที
+  max: 15,                     // 15 email/min/IP (ถ้าส่งเอกสารพร้อมกัน 5 ใบ × 3 คน = 15 พอดี)
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res) => {
+    logAbuse(req, 'rate-limit-email', { limit: 15, window: '1min' });
+    res.status(429).json({ error: 'ส่งอีเมลบ่อยเกินไป — รอ 1 นาที' });
+  },
+});
+const publicFormLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,   // 1 ชั่วโมง
+  max: 5,                      // 5 submit/ชม/IP (guest form)
+  standardHeaders: true,
+  legacyHeaders: false,
+  handler: (req, res) => {
+    logAbuse(req, 'rate-limit-public-form', { limit: 5, window: '1hour' });
+    res.status(429).json({ error: 'ลงทะเบียนบ่อยเกินไป — ลองใหม่ในอีก 1 ชั่วโมง' });
+  },
+});
+
+// ========== Middleware: API key ==========
+function requireApiKey(req, res, next) {
+  if (!API_KEY) return next(); // ปิดใช้งานถ้าไม่ได้ตั้ง env.API_KEY
+  const key = req.headers['x-api-key'];
+  if (key !== API_KEY) {
+    logAbuse(req, 'invalid-api-key', { provided: key ? `${String(key).slice(0, 4)}...` : 'missing' });
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+  next();
+}
+
+// ========== Validation helpers ==========
+function validateRecipient(to) {
+  if (!to || typeof to !== 'string') return { ok: false, reason: 'recipient-missing' };
+  const emails = to.split(/[,;]/).map(e => e.trim()).filter(Boolean);
+  if (emails.length === 0) return { ok: false, reason: 'recipient-empty' };
+  if (emails.length > MAX_RECIPIENTS) return { ok: false, reason: 'too-many-recipients' };
+  for (const email of emails) {
+    const m = email.match(/^[^@\s]+@([^@\s]+\.[^@\s]+)$/);
+    if (!m) return { ok: false, reason: `invalid-format:${email}` };
+    const domain = m[1].toLowerCase();
+    const allowed = RECIPIENT_ALLOWLIST.some(d => domain === d || domain.endsWith('.' + d));
+    if (!allowed) return { ok: false, reason: `domain-not-allowed:${domain}` };
+  }
+  return { ok: true };
+}
+
+function validateBodySize({ subject, html, body }) {
+  if (subject && subject.length > MAX_SUBJECT_LEN) return { ok: false, reason: 'subject-too-long' };
+  const totalLen = (html || '').length + (body || '').length;
+  if (totalLen > MAX_BODY_LEN) return { ok: false, reason: 'body-too-large' };
+  return { ok: true };
+}
+
+// ========== Apply rate limiters ==========
+app.use(generalLimiter);
+
+// Health check (ไม่ต้องใช้ API key + ไม่ rate limit)
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
@@ -187,11 +323,20 @@ app.get('/api/health', (req, res) => {
     secure: smtpConfig.secure,
     user: smtpConfig.auth.user ? smtpConfig.auth.user.replace(/^(.).+(@.+)$/, '$1***$2') : '',
     from: smtpFrom,
+    security: {
+      apiKey: !!API_KEY,
+      allowlist: RECIPIENT_ALLOWLIST,
+    },
   });
 });
 
+// Public form rate limit check — client (GuestView) calls นี้ก่อน submit
+app.post('/api/public-submit-check', publicFormLimiter, (req, res) => {
+  res.json({ ok: true });
+});
+
 // รับการ reload SMTP config จาก Admin UI (runtime only — ไม่เขียน .env)
-app.post('/api/config/smtp', (req, res) => {
+app.post('/api/config/smtp', requireApiKey, (req, res) => {
   const { host, port, secure, user, pass, from, fromName, enabled } = req.body || {};
   if (enabled === false) {
     transporter = null;
@@ -215,8 +360,28 @@ app.post('/api/config/smtp', (req, res) => {
   res.json({ success: ok, hasSMTP: !!transporter, host: smtpConfig.host, port: smtpConfig.port });
 });
 
-// ส่ง email
-app.post('/api/send-email', async (req, res) => {
+// ========== Security-wrapped email endpoint factory ==========
+function sendEmailEndpoint(handler) {
+  return [emailLimiter, requireApiKey, async (req, res) => {
+    const { to, subject, html, body } = req.body || {};
+    // 1) recipient validation
+    const rcp = validateRecipient(to);
+    if (!rcp.ok) {
+      logAbuse(req, 'recipient-not-allowed', { to, reason: rcp.reason });
+      return res.status(403).json({ error: `recipient validation failed: ${rcp.reason}` });
+    }
+    // 2) size validation
+    const size = validateBodySize({ subject, html, body });
+    if (!size.ok) {
+      logAbuse(req, 'payload-too-large', { reason: size.reason });
+      return res.status(413).json({ error: `payload too large: ${size.reason}` });
+    }
+    return handler(req, res);
+  }];
+}
+
+// ส่ง email (generic)
+app.post('/api/send-email', ...sendEmailEndpoint(async (req, res) => {
   const { to, subject, body, html } = req.body;
 
   if (!to || !subject) {
@@ -232,7 +397,6 @@ app.post('/api/send-email', async (req, res) => {
   };
 
   if (!transporter) {
-    // Demo mode — ไม่ส่งจริง
     console.log('\n📧 [DEMO] ส่ง email (ไม่ได้ส่งจริง):');
     console.log(`   To: ${to}`);
     console.log(`   Subject: ${subject}`);
@@ -248,10 +412,10 @@ app.post('/api/send-email', async (req, res) => {
     console.error('❌ ส่ง email ล้มเหลว:', err.message);
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 // ส่ง email พร้อมลิงก์อนุมัติ (HTML สวย + ปุ่มกด)
-app.post('/api/send-approval-email', async (req, res) => {
+app.post('/api/send-approval-email', ...sendEmailEndpoint(async (req, res) => {
   const { to, approverName, documentTitle, requesterName, department, date, approveUrl } = req.body;
 
   if (!to || !approveUrl) {
@@ -314,10 +478,10 @@ app.post('/api/send-approval-email', async (req, res) => {
     console.error('❌ ส่ง email ล้มเหลว:', err.message);
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 // ส่ง email นัดหมาย (พร้อมลิงก์ลงทะเบียน)
-app.post('/api/send-invite-email', async (req, res) => {
+app.post('/api/send-invite-email', ...sendEmailEndpoint(async (req, res) => {
   const { to, visitorName, date, staffId, department, refCode, guestLink } = req.body;
 
   if (!to) {
@@ -382,7 +546,7 @@ app.post('/api/send-invite-email', async (req, res) => {
     console.error('❌ ส่ง email ล้มเหลว:', err.message);
     res.status(500).json({ error: err.message });
   }
-});
+}));
 
 // =================== SMS ===================
 // รองรับ provider: twilio | vonage | thaisms
@@ -446,9 +610,16 @@ async function sendSmsViaProvider(to, message) {
 }
 
 // POST /api/send-sms — ส่ง SMS ทั่วไป
-app.post('/api/send-sms', async (req, res) => {
+app.post('/api/send-sms', emailLimiter, requireApiKey, async (req, res) => {
   const { to, message } = req.body;
   if (!to || !message) return res.status(400).json({ error: 'ต้องระบุ to และ message' });
+  if (!/^\+?\d{9,15}$/.test(to)) {
+    logAbuse(req, 'invalid-phone', { to });
+    return res.status(400).json({ error: 'เบอร์โทรศัพท์ไม่ถูกต้อง' });
+  }
+  if (message.length > 500) {
+    return res.status(400).json({ error: 'ข้อความยาวเกินไป' });
+  }
 
   if (!SMS_PROVIDER) {
     console.log(`\n📱 [DEMO SMS] → ${to}: ${message}`);
@@ -465,7 +636,7 @@ app.post('/api/send-sms', async (req, res) => {
 });
 
 // POST /api/send-approval-sms — แจ้งหัวหน้าให้เปิดลิงก์อนุมัติ
-app.post('/api/send-approval-sms', async (req, res) => {
+app.post('/api/send-approval-sms', emailLimiter, requireApiKey, async (req, res) => {
   const { to, requesterName, documentTitle, approveUrl } = req.body;
   if (!to) return res.status(400).json({ error: 'ต้องระบุ to' });
 
@@ -486,7 +657,7 @@ app.post('/api/send-approval-sms', async (req, res) => {
 });
 
 // POST /api/send-visitor-sms — แจ้งเตือนพนักงานว่าผู้มาติดต่อมาถึงแล้ว
-app.post('/api/send-visitor-sms', async (req, res) => {
+app.post('/api/send-visitor-sms', emailLimiter, requireApiKey, async (req, res) => {
   const { to, visitorName, company, gate } = req.body;
   if (!to) return res.status(400).json({ error: 'ต้องระบุ to' });
 
@@ -506,9 +677,20 @@ app.post('/api/send-visitor-sms', async (req, res) => {
   }
 });
 
+// ========== Error handler — don't leak stack traces ==========
+// eslint-disable-next-line no-unused-vars
+app.use((err, req, res, next) => {
+  console.error('❌ Unhandled error:', err.message);
+  res.status(500).json({ error: 'Internal server error' });
+});
+
 app.listen(PORT, () => {
   console.log(`\n🚀 Email+SMS Server รันที่ http://localhost:${PORT}`);
   console.log(`   Health: http://localhost:${PORT}/api/health`);
+  console.log(`\n🔒 Security:`);
+  console.log(`   API key: ${API_KEY ? '✅ enabled' : '⚠️  disabled (set env.API_KEY to enable)'}`);
+  console.log(`   Allowed recipient domains: ${RECIPIENT_ALLOWLIST.join(', ')}`);
+  console.log(`   Rate limits: general=120/min · email=15/min · public-form=5/hour`);
   if (!transporter) {
     console.log('\n📌 SMTP — ใส่ใน .env:');
     console.log('   SMTP_HOST=smtp.office365.com  SMTP_PORT=587');

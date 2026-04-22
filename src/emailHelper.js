@@ -5,10 +5,17 @@ import { normalizeDepartment } from './constants';
 
 // Backend SMTP server endpoint (optional — run `node server/email-server.js`)
 const EMAIL_API = import.meta.env.VITE_EMAIL_API || 'http://localhost:3001';
+const API_KEY = import.meta.env.VITE_API_KEY || '';
+
+function authHeaders(extra = {}) {
+  const headers = { 'Content-Type': 'application/json', ...extra };
+  if (API_KEY) headers['x-api-key'] = API_KEY;
+  return headers;
+}
 
 async function checkEmailServer() {
   try {
-    const res = await fetch(`${EMAIL_API}/api/health`, { signal: AbortSignal.timeout(1500) });
+    const res = await fetch(`${EMAIL_API}/api/health`, { signal: AbortSignal.timeout(3500) });
     const data = await res.json();
     return data.status === 'ok';
   } catch {
@@ -19,12 +26,34 @@ async function checkEmailServer() {
 async function sendViaBackendServer({ to, subject, html, text }) {
   const res = await fetch(`${EMAIL_API}/api/send-email`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders(),
     body: JSON.stringify({ to, subject, html, body: text }),
   });
   const data = await res.json();
   if (!data.success) throw new Error(data.error || 'Backend email failed');
   return data;
+}
+
+/**
+ * ตรวจ rate limit สำหรับ public form (guest)
+ * Returns true = ยอมให้ submit, false = เกิน limit แล้ว
+ */
+export async function checkPublicFormRate() {
+  try {
+    const res = await fetch(`${EMAIL_API}/api/public-submit-check`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (res.status === 429) return { ok: false, reason: 'rate-limit', message: 'ลงทะเบียนบ่อยเกินไป — ลองใหม่ในอีก 1 ชั่วโมง' };
+    const data = await res.json().catch(() => ({}));
+    return { ok: !!data.ok, reason: data.ok ? null : 'unknown' };
+  } catch (err) {
+    // ถ้า server ไม่ตอบ — ยอมให้ submit (fail-open) เพื่อไม่ให้ระบบใช้ไม่ได้
+    console.warn('rate check failed, allowing submit:', err?.message);
+    return { ok: true, reason: 'server-unreachable' };
+  }
 }
 
 // ========== EmailJS Config ==========
@@ -706,7 +735,7 @@ export async function sendApprovalSms({ phone, requesterName, documentTitle, app
   try {
     const res = await fetch(`${SMS_SERVER}/api/send-approval-sms`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders(),
       body: JSON.stringify({ to: phone, requesterName, documentTitle, approveUrl }),
     });
     return await res.json();
@@ -728,7 +757,7 @@ export async function sendVisitorArrivalSms({ phone, visitorName, company, gate 
   try {
     const res = await fetch(`${SMS_SERVER}/api/send-visitor-sms`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders(),
       body: JSON.stringify({ to: phone, visitorName, company, gate }),
     });
     return await res.json();

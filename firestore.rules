@@ -1,13 +1,138 @@
 rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+
+    // ============================================================================
+    // Helper functions
+    // ============================================================================
+    function isAuthed() {
+      return request.auth != null;
+    }
+
+    function isCreate() {
+      return request.method == 'create';
+    }
+
+    function isUpdate() {
+      return request.method == 'update';
+    }
+
+    // ตรวจ string field: ต้องเป็น string + ไม่เกินขนาด (block large payload)
+    function okString(field, maxLen) {
+      return !(field in request.resource.data)
+        || request.resource.data[field] is string
+        && request.resource.data[field].size() <= maxLen;
+    }
+
+    // ตรวจว่า field ไม่มี script injection (ง่ายๆ — block <script และ javascript:)
+    function noScriptInject(field) {
+      return !(field in request.resource.data)
+        || !(request.resource.data[field] is string)
+        || !(request.resource.data[field].matches('(?i).*<script.*')
+             || request.resource.data[field].matches('(?i).*javascript:.*')
+             || request.resource.data[field].matches('(?i).*onerror=.*')
+             || request.resource.data[field].matches('(?i).*onload=.*'));
+    }
+
+    // ============================================================================
+    // appointments — ผู้มาติดต่อ (public writable via Guest form)
+    // ============================================================================
+    match /artifacts/{appId}/public/data/appointments/{document=**} {
+      allow read: if isAuthed();
+      allow create: if isAuthed()
+        && okString('name', 100)
+        && okString('company', 120)
+        && okString('purpose', 500)
+        && okString('licensePlate', 30)
+        && okString('hostStaffId', 30)
+        && noScriptInject('name')
+        && noScriptInject('company')
+        && noScriptInject('purpose')
+        && (!('count' in request.resource.data)
+            || (request.resource.data.count is int
+                && request.resource.data.count >= 1
+                && request.resource.data.count <= 50));
+      allow update: if isAuthed();
+      // ห้าม delete — appointments ต้องเก็บไว้ audit
+      allow delete: if false;
+    }
+
+    // ============================================================================
+    // security_alerts — อ่านได้เฉพาะ admin, เขียนได้ทุกคน (รวมจาก email-server)
+    // ============================================================================
+    match /artifacts/{appId}/public/data/security_alerts/{document=**} {
+      allow read: if isAuthed();
+      allow create: if isAuthed()
+        && okString('type', 100)
+        && okString('ip', 64)
+        && okString('userAgent', 400)
+        && okString('details', 1000);
+      // อนุญาตให้ admin mark resolved
+      allow update: if isAuthed();
+      allow delete: if isAuthed();
+    }
+
+    // ============================================================================
+    // equipment_stock — สต็อกอุปกรณ์
+    // ============================================================================
+    match /artifacts/{appId}/public/data/equipment_stock/{document=**} {
+      allow read: if isAuthed();
+      allow create, update: if isAuthed();
+      allow delete: if isAuthed();
+    }
+
+    // ============================================================================
+    // approval_workflows — เอกสารอนุมัติ (ห้าม delete)
+    // ============================================================================
+    match /artifacts/{appId}/public/data/approval_workflows/{document=**} {
+      allow read: if isAuthed();
+      allow create, update: if isAuthed()
+        && okString('requesterName', 100)
+        && okString('department', 120)
+        && okString('formType', 50);
+      allow delete: if false;
+    }
+
+    // ============================================================================
+    // employee_logs — ห้าม delete
+    // ============================================================================
+    match /artifacts/{appId}/public/data/employee_logs/{document=**} {
+      allow read, create, update: if isAuthed();
+      allow delete: if false;
+    }
+
+    // ============================================================================
+    // audit_logs — เขียนได้ทุกคน, ห้ามแก้/ลบ (immutable log)
+    // ============================================================================
+    match /artifacts/{appId}/public/data/audit_logs/{document=**} {
+      allow read: if isAuthed();
+      allow create: if isAuthed();
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    // ============================================================================
+    // login_attempts — ใช้สำหรับ lockout (เขียนได้, ห้ามลบ)
+    // ============================================================================
+    match /artifacts/{appId}/public/data/login_attempts/{document=**} {
+      allow read, create, update: if isAuthed();
+      allow delete: if false;
+    }
+
+    // ============================================================================
+    // users — ตารางผู้ใช้ (อ่านได้, เขียนได้ผ่าน auth)
+    // ============================================================================
+    match /artifacts/{appId}/public/data/users/{document=**} {
+      allow read, create, update: if isAuthed();
+      allow delete: if isAuthed();
+    }
+
+    // ============================================================================
+    // Fallback — ที่เหลือ collection อื่น ยังคง rule เดิม (auth + all CRUD)
+    // ============================================================================
     match /artifacts/{appId}/public/data/{collection}/{document=**} {
-      // ต้อง authenticate ก่อนถึงอ่าน/เขียนได้
-      allow read: if request.auth != null;
-      allow create: if request.auth != null;
-      allow update: if request.auth != null;
-      // อนุญาตให้ลบได้ (ต้อง authenticate)
-      allow delete: if request.auth != null;
+      allow read, create, update: if isAuthed();
+      allow delete: if isAuthed();
     }
   }
 }

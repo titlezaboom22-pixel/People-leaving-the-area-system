@@ -35,10 +35,15 @@ services:
         value: no-reply@tbkk.co.th
       - key: SMTP_FROM_NAME
         value: SOC Systems - TBKK Group
-      # --- Firebase (สำหรับอ่าน SMTP config จาก Firestore) ---
+      # --- Firebase (สำหรับอ่าน SMTP config + เขียน security_alerts) ---
       - key: VITE_FIREBASE_PROJECT_ID
         value: tbkk-system
       - key: VITE_FIREBASE_API_KEY
         sync: false   # ⚠️ ใส่ใน Render dashboard
       - key: VITE_APP_ID
         value: visitor-soc-001
+      # --- Security (Layer 1) ---
+      - key: API_KEY
+        sync: false   # ⚠️ ใส่ใน Render dashboard (ตรงกับ VITE_API_KEY ใน .env frontend)
+      - key: RECIPIENT_DOMAIN_ALLOWLIST
+        value: tbkk.co.th,tbk.co.th

@@ -97,6 +97,17 @@ import { logAction, ACTIONS } from './auditLog';
 import { sendInviteEmail } from './emailService';
 import { notifyWorkflowReturned } from './notifyEmail';
 import ApprovePage from './ApprovePage';
+import SecurityAlertsPanel from './SecurityAlertsPanel';
+import { checkPublicFormRate } from './emailHelper';
+import {
+  createHoneypotState,
+  detectBotSubmission,
+  checkLocalRateLimit,
+  recordLocalSubmit,
+  formatResetTime,
+  HONEYPOT_STYLE,
+} from './botDetection';
+import { sanitize, hasScriptInjection } from './sanitize';
 
 const getTodayStr = () => new Date().toISOString().split('T')[0];
 
@@ -4631,6 +4642,7 @@ function AdminView({ appointments, user }) {
                 {activeTab === 'users' && 'ผู้ใช้งาน'}
                 {activeTab === 'stock' && 'สต็อก'}
                 {activeTab === 'fleet' && 'ยานพาหนะ'}
+                {activeTab === 'security' && 'ความปลอดภัย'}
                 {activeTab === 'system' && 'ตั้งค่าระบบ'}
               </span>
             </div>
@@ -4640,6 +4652,7 @@ function AdminView({ appointments, user }) {
               {activeTab === 'users' && 'จัดการผู้ใช้งาน'}
               {activeTab === 'stock' && 'จัดการสต็อก'}
               {activeTab === 'fleet' && 'จัดการยานพาหนะ'}
+              {activeTab === 'security' && 'ความปลอดภัย'}
               {activeTab === 'system' && 'ตั้งค่าระบบ'}
             </h2>
             <p className="text-slate-400 text-xs md:text-sm mt-1">
@@ -4647,6 +4660,7 @@ function AdminView({ appointments, user }) {
               {activeTab === 'documents' && 'ดูและจัดการเอกสารอนุมัติ, ใบเบิกอุปกรณ์'}
               {activeTab === 'users' && 'แก้ไขข้อมูลพนักงาน, เพิ่มผู้ใช้, ดูประวัติการใช้งาน'}
               {activeTab === 'stock' && 'จัดการสต็อกอุปกรณ์สำนักงาน'}
+              {activeTab === 'security' && 'ตรวจสอบการโจมตี สแปม และการเข้าถึงที่ผิดปกติ'}
               {activeTab === 'fleet' && 'จัดการรถบริษัทและการจอง'}
               {activeTab === 'system' && 'ตั้งค่าอีเมล SMTP และเครื่องมือแก้ไขปัญหา'}
             </p>
@@ -4663,6 +4677,7 @@ function AdminView({ appointments, user }) {
             { id: 'users',     label: 'ผู้ใช้งาน',    icon: Users,           bg: 'bg-blue-600',    text: 'text-blue-600'    },
             { id: 'stock',     label: 'สต็อก',       icon: Package,         bg: 'bg-amber-600',   text: 'text-amber-600'   },
             { id: 'fleet',     label: 'ยานพาหนะ',    icon: Car,             bg: 'bg-sky-600',     text: 'text-sky-600'     },
+            { id: 'security',  label: 'ความปลอดภัย', icon: Shield,          bg: 'bg-red-600',     text: 'text-red-600'     },
             { id: 'system',    label: 'ตั้งค่าระบบ',  icon: Settings,        bg: 'bg-rose-600',    text: 'text-rose-600'    },
           ].map(t => {
             const Icon = t.icon;
@@ -5875,6 +5890,11 @@ function AdminView({ appointments, user }) {
         </div>
       )}
 
+      {/* ===== Security Monitoring Panel (Security tab) ===== */}
+      {activeTab === 'security' && (
+        <SecurityAlertsPanel />
+      )}
+
       {/* ===== Feature 5: Troubleshooting Panel (System tab) ===== */}
       {activeTab === 'system' && (
       <div className="bg-white border border-slate-200 p-6 md:p-8 rounded-[2.5rem] shadow-sm">
@@ -6593,28 +6613,84 @@ function AdminView({ appointments, user }) {
 function GuestView({ user }) {
   const [submitted, setSubmitted] = useState(false);
   const [refCode, setRefCode] = useState('');
-  const [formData, setFormData] = useState({ 
+  const [submitting, setSubmitting] = useState(false);
+  const [formData, setFormData] = useState({
     name: '', additionalNames: [], company: '', hostName: '', hostStaffId: '', department: DEPARTMENTS[0], purpose: '', count: 1, vehicleType: 'รถยนต์', licensePlate: '',
     appointmentDate: getTodayStr()
   });
+  // Layer 2: Anti-bot state (honeypot + timing)
+  const [antiBot, setAntiBot] = useState(createHoneypotState);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (submitting) return;
     if (!firebaseReady) {
       alert('Firebase ไม่พร้อมใช้งาน กรุณาตั้งค่า Firebase Configuration');
       return;
     }
     if (!user) return;
-    const newRefCode = Math.random().toString(36).substring(2, 8).toUpperCase();
+
+    setSubmitting(true);
     try {
+      // ========== Layer 2: Bot detection ==========
+      const botCheck = detectBotSubmission(antiBot);
+      if (botCheck.isBot) {
+        console.warn('🚨 Bot submission blocked:', botCheck.reason);
+        // หลอก bot ให้คิดว่าสำเร็จ (honeytrap) — แต่ไม่ได้บันทึก
+        await new Promise(r => setTimeout(r, 1200));
+        setRefCode('BLOCKED');
+        setSubmitted(true);
+        return;
+      }
+
+      // ========== Layer 2: Client-side rate limit ==========
+      const localLimit = checkLocalRateLimit('guest-submit', 5);
+      if (!localLimit.allowed) {
+        alert(`ลงทะเบียนบ่อยเกินไปจากอุปกรณ์นี้ (เกิน ${localLimit.count} ครั้ง/ชั่วโมง)\nกรุณาลองใหม่ ${formatResetTime(localLimit.resetAt)}`);
+        return;
+      }
+
+      // ========== Layer 2: Server-side IP rate limit ==========
+      const ipCheck = await checkPublicFormRate();
+      if (!ipCheck.ok) {
+        alert(ipCheck.message || 'ระบบปฏิเสธคำขอ — กรุณาลองใหม่ภายหลัง');
+        return;
+      }
+
+      // ========== Sanitize input (ป้องกัน XSS) ==========
+      const sanitizedData = {
+        name: sanitize(formData.name).slice(0, 100),
+        additionalNames: (formData.additionalNames || []).map(n => sanitize(n).slice(0, 100)),
+        company: sanitize(formData.company).slice(0, 120),
+        hostName: sanitize(formData.hostName).slice(0, 100),
+        hostStaffId: sanitize(formData.hostStaffId.toString().trim().toUpperCase()).slice(0, 30),
+        department: formData.department,
+        purpose: sanitize(formData.purpose).slice(0, 500),
+        count: Math.max(1, Math.min(50, parseInt(formData.count) || 1)),
+        vehicleType: formData.vehicleType,
+        licensePlate: sanitize(formData.licensePlate).slice(0, 30),
+        appointmentDate: formData.appointmentDate,
+      };
+
+      // ตรวจซ้ำ: ถ้ามี script injection หลัง sanitize แล้ว
+      if (hasScriptInjection(formData.name) || hasScriptInjection(formData.purpose) || hasScriptInjection(formData.company)) {
+        console.warn('🚨 Script injection attempt blocked');
+        alert('ข้อความที่กรอกมีอักขระต้องห้าม');
+        return;
+      }
+
+      const newRefCode = Math.random().toString(36).substring(2, 8).toUpperCase();
       await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'appointments'), {
-        ...formData, hostStaffId: formData.hostStaffId.toString().trim().toUpperCase(), refCode: newRefCode, status: STATUS.PENDING, createdAt: Timestamp.now(),
+        ...sanitizedData, refCode: newRefCode, status: STATUS.PENDING, createdAt: Timestamp.now(),
       });
+      recordLocalSubmit('guest-submit');
       setRefCode(newRefCode);
       setSubmitted(true);
     } catch (error) {
       console.error('Error submitting form:', error);
       alert('เกิดข้อผิดพลาดในการลงทะเบียน: ' + error.message);
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -6627,6 +6703,15 @@ function GuestView({ user }) {
     host: formData.hostStaffId,
     dept: formData.department,
   });
+
+  // ถ้าถูก block จาก bot detection — แสดงหน้า "สำเร็จ" หลอก (ไม่ให้ bot รู้ว่าโดนจับ)
+  if (submitted && refCode === 'BLOCKED') return (
+    <div className="max-w-md mx-auto bg-white border border-slate-200 rounded-2xl p-12 text-center shadow-2xl mt-10 font-sans">
+      <div className="mb-10 mx-auto w-24 h-24 bg-slate-50 rounded-full flex items-center justify-center text-slate-400 border border-slate-100 shadow-sm"><CheckCircle2 size={56} /></div>
+      <h2 className="text-2xl font-black text-slate-700 tracking-tight">ลงทะเบียนสำเร็จ</h2>
+      <p className="text-slate-400 text-sm mt-4">ข้อมูลถูกบันทึกแล้ว<br/>กรุณาแสดงตัวที่ป้อมตามนัดหมาย</p>
+    </div>
+  );
 
   if (submitted) return (
     <div className="max-w-md mx-auto bg-white border border-slate-200 rounded-2xl md:rounded-[4rem] p-6 md:p-12 text-center shadow-2xl mt-4 md:mt-10 animate-in zoom-in-95 font-sans">
@@ -6661,6 +6746,17 @@ function GuestView({ user }) {
         <p className="text-blue-600 uppercase tracking-[0.5em] text-[10px] font-black text-center font-sans text-center">Digital Entry Registration System</p>
       </div>
       <form onSubmit={handleSubmit} className="bg-white border border-slate-200 p-6 md:p-12 lg:p-16 rounded-2xl md:rounded-[4rem] shadow-2xl space-y-8 md:space-y-12 backdrop-blur-sm text-left font-sans">
+        {/* Honeypot — ต้องว่างเสมอ (bot มักกรอก) */}
+        <input
+          type="text"
+          name="__contact_phone_extra"
+          tabIndex={-1}
+          autoComplete="off"
+          aria-hidden="true"
+          style={HONEYPOT_STYLE}
+          value={antiBot.honeypot}
+          onChange={e => setAntiBot(s => ({ ...s, honeypot: e.target.value }))}
+        />
         <div className="grid grid-cols-1 md:grid-cols-2 gap-x-12 gap-y-10 text-left font-sans text-left text-left text-left">
            <InputField label="ชื่อ-นามสกุลผู้ติดต่อ" placeholder="ชื่อ-นามสกุลจริง" value={formData.name} onChange={v => setFormData({...formData, name: v})} required />
            <InputField label="วันที่มาติดต่อ" type="date" value={formData.appointmentDate} onChange={v => setFormData({...formData, appointmentDate: v})} required />
@@ -6684,7 +6780,7 @@ function GuestView({ user }) {
            ))}
         </div>
         <InputField label="วัตถุประสงค์การเข้าพื้นที่" placeholder="ระบุรายละเอียด..." value={formData.purpose} onChange={v => setFormData({...formData, purpose: v})} required />
-        <button type="submit" className="w-full bg-slate-900 text-white py-7 rounded-[2rem] font-black text-xl hover:shadow-2xl hover:bg-black transition-all active:scale-95 uppercase tracking-widest shadow-xl text-left font-sans text-left text-left">Generate Digital Pass</button>
+        <button type="submit" disabled={submitting} className="w-full bg-slate-900 text-white py-7 rounded-[2rem] font-black text-xl hover:shadow-2xl hover:bg-black transition-all active:scale-95 uppercase tracking-widest shadow-xl text-left font-sans text-left text-left disabled:opacity-60 disabled:cursor-not-allowed">{submitting ? 'กำลังตรวจสอบ...' : 'Generate Digital Pass'}</button>
       </form>
     </div>
   );
