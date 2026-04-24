@@ -362,9 +362,14 @@ function SecurityGate({ appointments: externalAppointments, user, onLogout }) {
     } catch { return dateStr; }
   };
 
-  // Extract booking "ID" — prefer chainId tail / plate / doc id
+  // Extract booking "ID" — prefer login ID ของผู้ขอ (staffId)
   const bookingShortId = (b) => {
+    // 1. รหัสพนักงาน login (เช่น EMP-EEE-01, SD553)
+    if (b.bookedBy && b.bookedBy !== '-') return b.bookedBy;
+    if (b.requesterId && b.requesterId !== '-') return b.requesterId;
+    // 2. booking number (ถ้ามี)
     if (b.bookingNo) return b.bookingNo;
+    // 3. fallback — tail ของ chainId/doc id
     if (b.chainId) {
       const tail = String(b.chainId).split('-').pop();
       return tail?.slice(-5) || tail || '-';

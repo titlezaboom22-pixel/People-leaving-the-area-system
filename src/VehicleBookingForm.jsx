@@ -15,6 +15,9 @@ import {
   PenTool,
   Eraser,
   Upload,
+  Save,
+  Check,
+  X,
 } from 'lucide-react';
 import { collection, addDoc, onSnapshot, Timestamp } from 'firebase/firestore';
 import { db, firebaseReady, appId } from './firebase';
@@ -123,6 +126,224 @@ const SignaturePad = ({ canvasId, onSave, savedImage, width = 320, height = 80 }
   );
 };
 
+// --- Signature Manager: SignaturePad + saved signatures picker + save button ---
+const SignatureManager = ({ sigData, onChange }) => {
+  const [savedSigs, setSavedSigs] = useState([]);
+  const [showPicker, setShowPicker] = useState(false);
+  const [showSaveDialog, setShowSaveDialog] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [justSaved, setJustSaved] = useState(false);
+
+  // Load saved signatures from localStorage
+  useEffect(() => {
+    try {
+      const list = JSON.parse(localStorage.getItem('saved_signatures') || '[]');
+      if (Array.isArray(list)) setSavedSigs(list);
+    } catch {}
+  }, []);
+
+  const refreshSaved = () => {
+    try {
+      const list = JSON.parse(localStorage.getItem('saved_signatures') || '[]');
+      if (Array.isArray(list)) setSavedSigs(list);
+    } catch {}
+  };
+
+  const saveSignature = () => {
+    if (!sigData) {
+      alert('กรุณาวาดลายเซ็นก่อนบันทึก');
+      return;
+    }
+    const name = newName.trim() || `ลายเซ็น ${savedSigs.length + 1}`;
+    const newSig = {
+      name,
+      dataUrl: sigData,
+      date: new Date().toLocaleDateString('th-TH'),
+    };
+    const existing = savedSigs.filter((s) => s.dataUrl !== sigData);
+    const newList = [...existing, newSig].slice(-10); // เก็บไม่เกิน 10 อัน
+    try {
+      localStorage.setItem('saved_signatures', JSON.stringify(newList));
+      setSavedSigs(newList);
+      setShowSaveDialog(false);
+      setNewName('');
+      setJustSaved(true);
+      setTimeout(() => setJustSaved(false), 2500);
+    } catch (e) {
+      alert('บันทึกไม่สำเร็จ: ' + e.message);
+    }
+  };
+
+  const selectSignature = (sig) => {
+    onChange(sig.dataUrl);
+    setShowPicker(false);
+  };
+
+  const deleteSignature = (idx) => {
+    if (!confirm('ลบลายเซ็นนี้?')) return;
+    const newList = savedSigs.filter((_, i) => i !== idx);
+    try {
+      localStorage.setItem('saved_signatures', JSON.stringify(newList));
+      setSavedSigs(newList);
+    } catch {}
+  };
+
+  return (
+    <div className="bg-slate-50 rounded-2xl p-4 max-w-md mx-auto">
+      <SignaturePad
+        canvasId="sig-user"
+        savedImage={sigData}
+        onSave={(img) => {
+          onChange(img);
+          // Auto-save ตัวล่าสุดลง localStorage
+          if (img) {
+            try {
+              const list = JSON.parse(localStorage.getItem('saved_signatures') || '[]');
+              const arr = Array.isArray(list) ? list : [];
+              const filtered = arr.filter((s) => s.name !== 'ลายเซ็นล่าสุด' || s.dataUrl === img);
+              const existing = filtered.find((s) => s.dataUrl === img);
+              const newList = existing
+                ? filtered
+                : [...filtered, { name: 'ลายเซ็นล่าสุด', dataUrl: img, date: new Date().toLocaleDateString('th-TH') }].slice(-10);
+              localStorage.setItem('saved_signatures', JSON.stringify(newList));
+              setSavedSigs(newList);
+            } catch {}
+          }
+        }}
+        width={320}
+        height={80}
+      />
+
+      {/* Action buttons */}
+      <div className="mt-2 grid grid-cols-2 gap-1.5">
+        <button
+          type="button"
+          onClick={() => setShowSaveDialog(true)}
+          disabled={!sigData}
+          className="flex items-center justify-center gap-1.5 px-3 py-2 bg-emerald-500 hover:bg-emerald-600 disabled:bg-slate-200 disabled:text-slate-400 text-white rounded-lg text-xs font-bold transition active:scale-95"
+        >
+          <Save className="w-3.5 h-3.5" />
+          บันทึกลายเซ็น
+        </button>
+        <button
+          type="button"
+          onClick={() => { refreshSaved(); setShowPicker(!showPicker); }}
+          className="flex items-center justify-center gap-1.5 px-3 py-2 bg-indigo-500 hover:bg-indigo-600 text-white rounded-lg text-xs font-bold transition active:scale-95"
+        >
+          <FileText className="w-3.5 h-3.5" />
+          เลือกจากที่บันทึก ({savedSigs.length})
+        </button>
+      </div>
+
+      {/* Status indicator */}
+      {justSaved && (
+        <div className="mt-2 flex items-center justify-center gap-1.5 text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg py-1.5 font-bold">
+          <Check className="w-3.5 h-3.5" /> บันทึกลายเซ็นเรียบร้อย!
+        </div>
+      )}
+      {!justSaved && (
+        sigData ? (
+          <div className="mt-2 flex items-center justify-center gap-1.5 text-[11px] text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg py-1.5">
+            ✓ ลายเซ็นพร้อมใช้ · ครั้งหน้าจะขึ้นเองอัตโนมัติ
+          </div>
+        ) : (
+          <div className="mt-2 flex items-center justify-center gap-1.5 text-[11px] text-slate-500 bg-slate-100 border border-slate-200 rounded-lg py-1.5">
+            💡 วาดลายเซ็นในกรอบด้านบน หรือเลือกจากที่บันทึกไว้
+          </div>
+        )
+      )}
+
+      {/* Save Dialog */}
+      {showSaveDialog && (
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4" onClick={() => setShowSaveDialog(false)}>
+          <div className="bg-white rounded-2xl shadow-2xl max-w-sm w-full p-5" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="font-black text-slate-800 flex items-center gap-2">
+                <Save className="w-5 h-5 text-emerald-600" /> บันทึกลายเซ็น
+              </h3>
+              <button onClick={() => setShowSaveDialog(false)} className="text-slate-400 hover:text-slate-600">
+                <X className="w-4 h-4" />
+              </button>
+            </div>
+            {sigData && (
+              <div className="mb-3 p-3 bg-slate-50 border border-slate-200 rounded-xl">
+                <img src={sigData} alt="preview" className="w-full max-h-24 object-contain" />
+              </div>
+            )}
+            <label className="block text-xs font-bold text-slate-600 mb-1.5">ตั้งชื่อลายเซ็น</label>
+            <input
+              type="text"
+              value={newName}
+              onChange={(e) => setNewName(e.target.value)}
+              placeholder="เช่น ลายเซ็นหลัก / ลายเซ็นบริษัท"
+              className="w-full px-3 py-2 border-2 border-slate-200 rounded-xl focus:border-emerald-500 focus:outline-none text-sm"
+              maxLength={50}
+              autoFocus
+            />
+            <div className="flex gap-2 mt-4">
+              <button
+                type="button"
+                onClick={() => setShowSaveDialog(false)}
+                className="flex-1 py-2.5 rounded-xl text-sm font-bold text-slate-600 hover:bg-slate-100 transition"
+              >
+                ยกเลิก
+              </button>
+              <button
+                type="button"
+                onClick={saveSignature}
+                className="flex-[2] py-2.5 rounded-xl text-sm font-black text-white bg-emerald-500 hover:bg-emerald-600 transition flex items-center justify-center gap-2"
+              >
+                <Save className="w-4 h-4" /> บันทึก
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Saved signatures picker */}
+      {showPicker && (
+        <div className="mt-3 bg-white border-2 border-indigo-200 rounded-2xl p-3 max-h-72 overflow-y-auto">
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-xs font-black text-indigo-700">ลายเซ็นที่บันทึกไว้</p>
+            <button onClick={() => setShowPicker(false)} className="text-slate-400 hover:text-slate-600">
+              <X className="w-3.5 h-3.5" />
+            </button>
+          </div>
+          {savedSigs.length === 0 ? (
+            <p className="text-xs text-slate-400 text-center py-4 italic">ยังไม่มีลายเซ็นบันทึกไว้</p>
+          ) : (
+            <div className="space-y-1.5">
+              {savedSigs.map((s, i) => (
+                <div key={i} className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl p-2 hover:border-indigo-300 transition">
+                  <button
+                    type="button"
+                    onClick={() => selectSignature(s)}
+                    className="flex-1 flex items-center gap-2 text-left"
+                  >
+                    <img src={s.dataUrl} alt={s.name} className="w-16 h-10 bg-white border border-slate-200 rounded object-contain flex-shrink-0" />
+                    <div className="min-w-0 flex-1">
+                      <p className="text-xs font-bold text-slate-800 truncate">{s.name}</p>
+                      <p className="text-[10px] text-slate-400">{s.date}</p>
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => deleteSignature(i)}
+                    className="p-1.5 text-red-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition"
+                    title="ลบ"
+                  >
+                    <Trash2 className="w-3.5 h-3.5" />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
 // --- Main App ---
 const VehicleBookingFormApp = () => {
   const [formData, setFormData] = useState({
@@ -158,7 +379,7 @@ const VehicleBookingFormApp = () => {
   const [copiedLink, setCopiedLink] = useState(false);
   const [showApproverPicker, setShowApproverPicker] = useState(false);
 
-  // Read URL params for prefill
+  // Read URL params for prefill + auto-load saved signature
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     const date = params.get('date');
@@ -168,6 +389,16 @@ const VehicleBookingFormApp = () => {
     const name = params.get('name');
     const staffId = params.get('staffId');
     const dept = params.get('dept');
+
+    // Auto-load ลายเซ็นที่บันทึกไว้ล่าสุดจาก localStorage
+    let savedSig = null;
+    try {
+      const list = JSON.parse(localStorage.getItem('saved_signatures') || '[]');
+      if (Array.isArray(list) && list.length > 0) {
+        savedSig = list[list.length - 1]?.dataUrl || null;
+      }
+    } catch {}
+
     setFormData((prev) => ({
       ...prev,
       ...(name && { requesterName: name }),
@@ -176,6 +407,7 @@ const VehicleBookingFormApp = () => {
       ...(date && { date }),
       ...(plate && { approvedCarNo: decodeURIComponent(plate) }),
       ...(brand && { approvedCarBrand: decodeURIComponent(brand) }),
+      ...(savedSig && !prev.sigUser && { sigUser: savedSig }),
     }));
     if (vehicleId) setSelectedVehicleId(vehicleId);
   }, []);
@@ -737,15 +969,10 @@ const VehicleBookingFormApp = () => {
                 <PenTool className="w-5 h-5" />
                 ลายเซ็นผู้ขอ (Requester Signature)
               </h3>
-              <div className="bg-slate-50 rounded-2xl p-4 max-w-md mx-auto">
-                <SignaturePad
-                  canvasId="sig-user"
-                  savedImage={formData.sigUser}
-                  onSave={(img) => updateField('sigUser', img)}
-                  width={320}
-                  height={80}
-                />
-              </div>
+              <SignatureManager
+                sigData={formData.sigUser}
+                onChange={(img) => updateField('sigUser', img)}
+              />
             </section>
 
             {/* Submit */}
@@ -770,153 +997,100 @@ const VehicleBookingFormApp = () => {
         </div>
       </div>
 
-      {/* Approve Link Modal — แสดงหลังส่งฟอร์ม */}
+      {/* Approve Link Modal — แสดงหลังส่งฟอร์ม (compact, mobile-friendly) */}
       {approveLinkModal && (
-        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in">
-          <div className="bg-white rounded-3xl shadow-2xl max-w-lg w-full overflow-hidden">
-            <div className="bg-gradient-to-r from-emerald-500 to-teal-500 p-6 text-white">
-              <div className="flex items-center gap-3 mb-1">
-                <div className="w-12 h-12 rounded-full bg-white/20 flex items-center justify-center text-2xl">✓</div>
-                <div>
-                  <h3 className="font-black text-lg md:text-xl">ส่งเรียบร้อย! / Submitted!</h3>
-                  <p className="text-emerald-50 text-xs">ส่งลิงก์นี้ให้หัวหน้าเซ็นอนุมัติ / Share this link with head for approval</p>
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-sm z-50 flex items-end sm:items-center justify-center p-2 sm:p-4 animate-in fade-in">
+          <div className="bg-white rounded-2xl sm:rounded-3xl shadow-2xl max-w-lg w-full overflow-hidden max-h-[95vh] flex flex-col">
+            <div className="bg-gradient-to-r from-emerald-500 to-teal-500 p-3 sm:p-5 text-white flex-shrink-0">
+              <div className="flex items-center gap-2 sm:gap-3">
+                <div className="w-9 h-9 sm:w-11 sm:h-11 rounded-full bg-white/20 flex items-center justify-center text-lg sm:text-2xl">✓</div>
+                <div className="min-w-0">
+                  <h3 className="font-black text-base sm:text-lg leading-tight">ส่งเรียบร้อย!</h3>
+                  <p className="text-emerald-50 text-[10px] sm:text-xs leading-tight">ส่งลิงก์นี้ให้หัวหน้าเซ็นอนุมัติ</p>
                 </div>
               </div>
             </div>
 
-            <div className="p-5 md:p-6 space-y-4">
+            <div className="p-3 sm:p-5 space-y-3 overflow-y-auto">
               {/* QR Code */}
-              <div className="flex flex-col items-center gap-2 py-3 border-2 border-dashed border-slate-200 rounded-2xl bg-slate-50">
+              <div className="flex flex-col items-center gap-1 py-2 border border-dashed border-slate-200 rounded-xl bg-slate-50">
                 <img
                   src={`https://api.qrserver.com/v1/create-qr-code/?size=180x180&data=${encodeURIComponent(approveLinkModal.url)}`}
                   alt="QR Code"
-                  className="w-40 h-40"
+                  className="w-28 h-28 sm:w-36 sm:h-36"
                 />
-                <p className="text-[11px] text-slate-500">📱 สแกน QR เพื่อเปิดหน้าเซ็นอนุมัติ</p>
+                <p className="text-[10px] text-slate-500">📱 สแกนเพื่อเปิดหน้าอนุมัติ</p>
               </div>
 
               {/* URL */}
-              <div className="space-y-1.5">
-                <label className="text-xs font-bold text-slate-600">ลิงก์เซ็นอนุมัติ:</label>
-                <div className="flex gap-2">
-                  <input
-                    type="text"
-                    readOnly
-                    value={approveLinkModal.url}
-                    onFocus={(e) => e.target.select()}
-                    className="flex-1 px-3 py-2 bg-slate-50 border-2 border-slate-200 rounded-xl text-xs font-mono outline-none focus:border-indigo-500"
-                  />
-                  <button
-                    type="button"
-                    onClick={copyApproveLink}
-                    className={`px-4 py-2 rounded-xl font-bold text-xs whitespace-nowrap transition ${copiedLink ? 'bg-emerald-500 text-white' : 'bg-indigo-600 text-white hover:bg-indigo-700'}`}
-                  >
-                    {copiedLink ? '✓ คัดลอกแล้ว' : '📋 คัดลอก'}
-                  </button>
-                </div>
+              <div className="flex gap-1.5">
+                <input
+                  type="text"
+                  readOnly
+                  value={approveLinkModal.url}
+                  onFocus={(e) => e.target.select()}
+                  className="flex-1 px-2 py-1.5 bg-slate-50 border border-slate-200 rounded-lg text-[10px] font-mono outline-none focus:border-indigo-500 min-w-0"
+                />
+                <button
+                  type="button"
+                  onClick={copyApproveLink}
+                  className={`px-3 py-1.5 rounded-lg font-bold text-[10px] whitespace-nowrap transition ${copiedLink ? 'bg-emerald-500 text-white' : 'bg-indigo-600 text-white hover:bg-indigo-700'}`}
+                >
+                  {copiedLink ? '✓' : '📋 คัดลอก'}
+                </button>
               </div>
 
-              {/* ✨ วิธีที่แนะนำ — ไม่ต้องมีโปรแกรม Outlook */}
-              <div className="bg-gradient-to-br from-emerald-50 to-teal-50 border-2 border-emerald-300 p-3 rounded-2xl">
-                <p className="text-[11px] font-black text-emerald-800 mb-2 flex items-center gap-1">
-                  ⭐ วิธีที่แนะนำ (ไม่ต้องมีโปรแกรมใดๆ ติดเครื่อง)
-                </p>
-                <div className="grid grid-cols-3 gap-2">
+              {/* ช่องทางแชร์ทั้งหมด — รวมใน grid เดียว 4 คอลัมน์ */}
+              <div>
+                <p className="text-[10px] font-black text-slate-600 mb-1.5">⭐ เลือกวิธีส่งให้หัวหน้า</p>
+                <div className="grid grid-cols-4 gap-1.5">
                   <button
                     type="button"
                     onClick={shareViaLine}
-                    className="flex flex-col items-center gap-1 p-3 bg-green-500 hover:bg-green-600 text-white rounded-xl transition shadow-sm"
+                    className="flex flex-col items-center gap-0.5 p-2 bg-green-500 hover:bg-green-600 text-white rounded-lg transition shadow-sm active:scale-95"
                   >
-                    <span className="text-2xl">💬</span>
-                    <span className="text-[11px] font-black">LINE</span>
+                    <span className="text-lg">💬</span>
+                    <span className="text-[9px] font-black">LINE</span>
                   </button>
-                  <button
-                    type="button"
-                    onClick={copyApproveLink}
-                    className={`flex flex-col items-center gap-1 p-3 rounded-xl transition shadow-sm ${copiedLink ? 'bg-emerald-600 text-white' : 'bg-indigo-500 hover:bg-indigo-600 text-white'}`}
-                  >
-                    <span className="text-2xl">{copiedLink ? '✓' : '📋'}</span>
-                    <span className="text-[11px] font-black">{copiedLink ? 'คัดลอกแล้ว' : 'คัดลอกลิงก์'}</span>
-                  </button>
-                  <div className="flex flex-col items-center gap-1 p-3 bg-white border-2 border-slate-200 rounded-xl">
-                    <span className="text-2xl">📱</span>
-                    <span className="text-[10px] font-black text-slate-700 text-center leading-tight">สแกน QR<br/>ด้านบน</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* ส่งทาง Email (Web-based — ไม่ต้องโปรแกรม) */}
-              <div className="bg-blue-50 border-2 border-blue-200 p-3 rounded-2xl">
-                <p className="text-[11px] font-black text-blue-800 mb-2">📧 ส่งผ่าน Email (เลือก 1 อย่าง)</p>
-                <div className="grid grid-cols-3 gap-2">
                   <button
                     type="button"
                     onClick={openOutlookWeb}
-                    className="flex flex-col items-center gap-1 p-2.5 bg-white hover:bg-blue-100 border-2 border-blue-300 rounded-xl transition"
-                    title="เปิด Outlook ในเบราว์เซอร์ — ไม่ต้องติดตั้งโปรแกรม"
+                    className="flex flex-col items-center gap-0.5 p-2 bg-blue-500 hover:bg-blue-600 text-white rounded-lg transition shadow-sm active:scale-95"
                   >
-                    <span className="text-xl">🌐</span>
-                    <span className="text-[10px] font-bold text-blue-700 text-center leading-tight">Outlook<br/>Web</span>
+                    <span className="text-lg">🌐</span>
+                    <span className="text-[9px] font-black">Outlook</span>
                   </button>
                   <button
                     type="button"
                     onClick={openGmailWeb}
-                    className="flex flex-col items-center gap-1 p-2.5 bg-white hover:bg-red-50 border-2 border-red-200 rounded-xl transition"
-                    title="เปิด Gmail ในเบราว์เซอร์"
+                    className="flex flex-col items-center gap-0.5 p-2 bg-red-500 hover:bg-red-600 text-white rounded-lg transition shadow-sm active:scale-95"
                   >
-                    <span className="text-xl">✉️</span>
-                    <span className="text-[10px] font-bold text-red-700 text-center leading-tight">Gmail<br/>Web</span>
+                    <span className="text-lg">✉️</span>
+                    <span className="text-[9px] font-black">Gmail</span>
                   </button>
                   <button
                     type="button"
-                    onClick={openEmailClient}
-                    className="flex flex-col items-center gap-1 p-2.5 bg-white hover:bg-slate-100 border-2 border-slate-200 rounded-xl transition"
-                    title="ใช้โปรแกรม Outlook ที่ติดตั้งในเครื่อง"
+                    onClick={shareViaTeams}
+                    className="flex flex-col items-center gap-0.5 p-2 bg-purple-500 hover:bg-purple-600 text-white rounded-lg transition shadow-sm active:scale-95"
                   >
-                    <span className="text-xl">📧</span>
-                    <span className="text-[10px] font-bold text-slate-700 text-center leading-tight">Outlook<br/>Desktop</span>
+                    <span className="text-lg">👥</span>
+                    <span className="text-[9px] font-black">Teams</span>
                   </button>
                 </div>
               </div>
 
-              {/* ช่องทางอื่น */}
-              <div className="grid grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={shareViaTeams}
-                  className="flex items-center justify-center gap-2 p-2.5 bg-purple-50 hover:bg-purple-100 border-2 border-purple-200 rounded-xl transition"
-                >
-                  <span className="text-lg">👥</span>
-                  <span className="text-[11px] font-bold text-purple-700">ส่งทาง Teams</span>
-                </button>
-                <a
-                  href={approveLinkModal.url}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="flex items-center justify-center gap-2 p-2.5 bg-slate-50 hover:bg-slate-100 border-2 border-slate-200 rounded-xl transition"
-                >
-                  <span className="text-lg">🔗</span>
-                  <span className="text-[11px] font-bold text-slate-700">เปิดทดสอบ</span>
-                </a>
-              </div>
-
               {approveLinkModal.headEmail && (
-                <div className="bg-amber-50 border-l-4 border-amber-400 p-3 rounded-r-lg text-xs text-amber-900">
-                  <p className="font-black mb-1">💡 ถ้าหัวหน้าไม่มีโปรแกรม Outlook:</p>
-                  <ul className="space-y-0.5 text-amber-800 text-[11px]">
-                    <li>• <b>LINE</b> — ส่งลิงก์ผ่าน LINE (ทุกคนมี)</li>
-                    <li>• <b>QR Code</b> — ให้หัวหน้าสแกนจากมือถือ</li>
-                    <li>• <b>Outlook Web / Gmail Web</b> — ส่ง email จากเบราว์เซอร์ (ไม่ต้องติดตั้ง)</li>
-                    <li>• <b>Teams</b> — ส่งแชตใน Microsoft Teams</li>
-                  </ul>
-                  <p className="mt-2 pt-2 border-t border-amber-300 font-bold">📧 Email หัวหน้า: <span className="font-mono">{approveLinkModal.headEmail}</span></p>
+                <div className="bg-amber-50 border-l-4 border-amber-400 p-2 rounded-r-lg text-[10px] text-amber-900">
+                  📧 Email หัวหน้า: <span className="font-mono font-bold">{approveLinkModal.headEmail}</span>
                 </div>
               )}
+            </div>
 
+            <div className="p-3 border-t border-slate-200 flex-shrink-0 bg-white">
               <button
                 type="button"
                 onClick={() => { setApproveLinkModal(null); setSentSuccess(false); }}
-                className="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 py-3 rounded-xl font-bold text-sm transition"
+                className="w-full bg-slate-100 hover:bg-slate-200 text-slate-700 py-2.5 rounded-xl font-bold text-sm transition"
               >
                 ปิด
               </button>

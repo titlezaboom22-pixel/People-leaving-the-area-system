@@ -32,6 +32,7 @@ export const ROLES = {
   SECURITY: 'SECURITY',
   GUEST: 'GUEST',
   ADMIN: 'ADMIN',
+  DRIVER: 'DRIVER',
 };
 
 // Workflow routing ตามประเภทเอกสาร

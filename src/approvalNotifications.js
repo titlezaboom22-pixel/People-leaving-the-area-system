@@ -289,7 +289,10 @@ export async function getWorkflowSummariesForRequester(requesterId) {
 
   return Array.from(byChain.entries())
     .map(([chainId, steps]) => {
-      const sorted = steps.sort((a, b) => (a.step || 1) - (b.step || 1));
+      const allSorted = steps.sort((a, b) => (a.step || 1) - (b.step || 1));
+      // Dedupe: ถ้า step เดียวกันมีทั้ง approved และ pending → มอง pending เป็น duplicate ที่ตกค้าง
+      const approvedStepNums = new Set(allSorted.filter((s) => s.status === 'approved').map((s) => s.step));
+      const sorted = allSorted.filter((s) => !(s.status === 'pending' && approvedStepNums.has(s.step)));
       const returned = sorted.find((s) => s.status === 'returned');
       const pending = sorted.find((s) => s.status === 'pending');
       const last = sorted[sorted.length - 1];

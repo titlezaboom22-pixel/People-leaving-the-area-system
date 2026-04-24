@@ -18,11 +18,29 @@ import express from 'express';
 import cors from 'cors';
 import nodemailer from 'nodemailer';
 import rateLimit from 'express-rate-limit';
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { initializeApp, cert, getApps } from 'firebase-admin/app';
+import { getMessaging } from 'firebase-admin/messaging';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+// ========== Firebase Admin SDK (สำหรับส่ง FCM push) ==========
+let fcmAdmin = null;
+try {
+  const keyPath = resolve(__dirname, 'firebase-admin-key.json');
+  if (existsSync(keyPath) && getApps().length === 0) {
+    const serviceAccount = JSON.parse(readFileSync(keyPath, 'utf-8'));
+    initializeApp({ credential: cert(serviceAccount) });
+    fcmAdmin = getMessaging();
+    console.log('✅ Firebase Admin SDK พร้อมส่ง FCM push');
+  } else if (!existsSync(keyPath)) {
+    console.log('ℹ️  ไม่พบ server/firebase-admin-key.json — FCM push ปิดใช้งาน');
+  }
+} catch (err) {
+  console.warn('⚠️ Firebase Admin init failed:', err.message);
+}
 
 // โหลด config — รองรับทั้ง
 //   1. Cloud environment (Render/Railway/Fly) — อ่านจาก process.env
@@ -547,6 +565,65 @@ app.post('/api/send-invite-email', ...sendEmailEndpoint(async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 }));
+
+// =================== FCM Push ===================
+// POST /api/send-push — ส่ง push notification ไปยัง FCM tokens
+// body: { tokens: [...], title, body, data: { clickUrl, ... } }
+app.post('/api/send-push', emailLimiter, requireApiKey, async (req, res) => {
+  if (!fcmAdmin) {
+    return res.status(503).json({ error: 'FCM Admin ยังไม่พร้อม — ตรวจ server/firebase-admin-key.json' });
+  }
+  const { tokens, title, body, data } = req.body || {};
+  const tokenList = Array.isArray(tokens) ? tokens.filter(Boolean) : (tokens ? [tokens] : []);
+  if (tokenList.length === 0) return res.status(400).json({ error: 'ต้องระบุ tokens (array หรือ string)' });
+  if (!title || !body) return res.status(400).json({ error: 'ต้องระบุ title และ body' });
+  if (tokenList.length > 100) return res.status(400).json({ error: 'ส่งได้ไม่เกิน 100 tokens ต่อครั้ง' });
+
+  // data values ต้องเป็น string (FCM requirement)
+  const dataStr = {};
+  for (const [k, v] of Object.entries(data || {})) {
+    dataStr[k] = v == null ? '' : String(v);
+  }
+
+  try {
+    const result = await fcmAdmin.sendEachForMulticast({
+      tokens: tokenList,
+      notification: { title: String(title).slice(0, 120), body: String(body).slice(0, 500) },
+      data: dataStr,
+      webpush: {
+        notification: {
+          icon: '/images/icon-192.png',
+          badge: '/images/icon-192.png',
+          requireInteraction: true,
+          vibrate: [200, 100, 200],
+        },
+        fcmOptions: dataStr.clickUrl ? { link: dataStr.clickUrl } : undefined,
+      },
+    });
+    console.log(`📲 Push: success=${result.successCount} fail=${result.failureCount}`);
+
+    // เก็บ tokens ที่ใช้งานไม่ได้เพื่อคืนให้ client ลบออก
+    const invalidTokens = [];
+    result.responses.forEach((r, i) => {
+      if (!r.success) {
+        const code = r.error?.code || '';
+        if (code.includes('registration-token-not-registered') || code.includes('invalid-registration-token')) {
+          invalidTokens.push(tokenList[i]);
+        }
+      }
+    });
+
+    res.json({
+      success: true,
+      sent: result.successCount,
+      failed: result.failureCount,
+      invalidTokens,
+    });
+  } catch (err) {
+    console.error('❌ FCM send failed:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // =================== SMS ===================
 // รองรับ provider: twilio | vonage | thaisms

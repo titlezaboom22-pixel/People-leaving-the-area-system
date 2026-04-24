@@ -1,9 +1,9 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { collection, query, where, getDocs, doc, updateDoc, addDoc, Timestamp, onSnapshot } from 'firebase/firestore';
+import { collection, query, where, getDocs, getDoc, doc, updateDoc, addDoc, Timestamp, onSnapshot } from 'firebase/firestore';
 import { signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { db, auth, firebaseReady, appId } from './firebase';
 import { HR_DEPARTMENT, SHOP_DEPARTMENT, SECURITY_DEPARTMENT, STEP_LABEL, WORKFLOW_ROUTES, SPECIAL_EMAILS } from './constants';
-import { getHeadEmail, copyHtmlAndOpenOutlook, buildApproveUrl } from './emailHelper';
+import { getHeadEmail, copyHtmlAndOpenOutlook, buildApproveUrl, sendPushToUser } from './emailHelper';
 
 /**
  * หน้าอนุมัติเอกสาร — เปิดจากลิงก์ใน Outlook โดยไม่ต้อง login
@@ -16,6 +16,7 @@ export default function ApprovePage({ workflowId }) {
   const [signDataUrl, setSignDataUrl] = useState('');
   const [approverName, setApproverName] = useState('');
   const [done, setDone] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [savedSignatures, setSavedSignatures] = useState([]);
   const [showSavedPicker, setShowSavedPicker] = useState(false);
   // GA vehicle assignment state
@@ -148,6 +149,28 @@ export default function ApprovePage({ workflowId }) {
 
   useEffect(() => { initCanvas(); }, [item]);
 
+  // Auto-fill ลายเซ็นที่บันทึกไว้ล่าสุด เมื่อเปิดหน้า (ถ้ามี และยังไม่มีลายเซ็น)
+  useEffect(() => {
+    if (!item || signDataUrl || savedSignatures.length === 0) return;
+    const latest = savedSignatures[savedSignatures.length - 1];
+    if (!latest?.dataUrl) return;
+    setSignDataUrl(latest.dataUrl);
+    if (latest.name && !approverName) setApproverName(latest.name);
+    // วาดลง canvas
+    const img = new Image();
+    img.onload = () => {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      const scale = Math.min(canvas.width / img.width, canvas.height / img.height) * 0.9;
+      const x = (canvas.width - img.width * scale) / 2;
+      const y = (canvas.height - img.height * scale) / 2;
+      ctx.drawImage(img, x, y, img.width * scale, img.height * scale);
+    };
+    img.src = latest.dataUrl;
+  }, [item, savedSignatures]);
+
   const getPos = (e) => {
     const canvas = canvasRef.current;
     const rect = canvas.getBoundingClientRect();
@@ -251,7 +274,7 @@ export default function ApprovePage({ workflowId }) {
 
   // Quick Approve — ใช้ลายเซ็นที่บันทึกไว้ กดปุ่มเดียวจบ
   const handleQuickApprove = async (sig) => {
-    if (!item) return;
+    if (!item || submitting) return;
     setSignDataUrl(sig.dataUrl);
     setApproverName(sig.name);
     // รอ state อัปเดต แล้วค่อย approve
@@ -261,6 +284,7 @@ export default function ApprovePage({ workflowId }) {
   };
 
   const handleApprove = async () => {
+    if (submitting) return;
     if (!signDataUrl) { alert('กรุณาลงลายเซ็นก่อนอนุมัติ'); return; }
     if (!item) return;
 
@@ -281,9 +305,19 @@ export default function ApprovePage({ workflowId }) {
   const handleApproveWithData = async (signData, approver) => {
     if (!signData) { alert('กรุณาลงลายเซ็นก่อนอนุมัติ'); return; }
     if (!item) return;
+    if (submitting) return;
 
+    setSubmitting(true);
     try {
       const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'approval_workflows', item._docId);
+      // Idempotency: อ่าน status ล่าสุดจาก Firestore ก่อน — กันสร้าง next step ซ้ำ
+      const freshSnap = await getDoc(docRef);
+      if (!freshSnap.exists() || freshSnap.data().status !== 'pending') {
+        alert('เอกสารนี้ได้รับการอนุมัติไปแล้ว');
+        setSubmitting(false);
+        setDone(true);
+        return;
+      }
       const now = new Date().toISOString();
 
       const approveDate = new Date().toLocaleDateString('th-TH', { day: '2-digit', month: '2-digit', year: 'numeric' });
@@ -438,11 +472,82 @@ export default function ApprovePage({ workflowId }) {
             approveUrl,
           }).catch(err => console.warn('send fail', to, err))));
         }
+
+        // ส่ง FCM push ไปผู้อนุมัติคนถัดไป (ไม่ block — ยิงใน background)
+        try {
+          const approveUrl = buildApproveUrl(nextItem.id);
+          const pushTitle = `🔔 TBK SOC — รอเซ็นอนุมัติ`;
+          const pushBody = `${item.topic}\nผู้ขอ: ${item.requesterName || '-'}`;
+          // หา staffIds ของผู้รับ push ตาม step type
+          let recipientIds = [];
+          if (nextTargetType === 'GA' || nextDept === 'GA') {
+            const gaSnap = await getDocs(
+              query(collection(db, 'artifacts', appId, 'public', 'data', 'users'),
+                where('role', '==', 'GA')),
+            );
+            recipientIds = gaSnap.docs.filter((d) => d.data().active !== false).map((d) => d.id);
+          } else if (nextTargetType === 'SECURITY') {
+            const secSnap = await getDocs(
+              query(collection(db, 'artifacts', appId, 'public', 'data', 'users'),
+                where('role', '==', 'SECURITY')),
+            );
+            recipientIds = secSnap.docs.filter((d) => d.data().active !== false).map((d) => d.id);
+          } else if (nextDept) {
+            // หัวหน้าแผนก (HR หรืออื่น)
+            const headSnap = await getDocs(
+              query(collection(db, 'artifacts', appId, 'public', 'data', 'users'),
+                where('roleType', '==', 'HEAD')),
+            );
+            const target = (nextDept || '').toString();
+            recipientIds = headSnap.docs
+              .filter((d) => d.data().active !== false && (d.data().department || '').includes(target.split(' ')[0]))
+              .map((d) => d.id);
+          }
+          recipientIds.forEach((id) => {
+            sendPushToUser(id, { title: pushTitle, body: pushBody, clickUrl: approveUrl }).catch(() => {});
+          });
+        } catch (err) {
+          console.warn('FCM push failed:', err?.message);
+        }
+      }
+
+      // 🔔 แจ้งพนักงาน (เจ้าของเอกสาร) ว่า step นี้ถูกอนุมัติแล้ว
+      try {
+        if (item.requesterId) {
+          const isFinalStep = step >= maxSteps;
+          const approverLabel = item.stepLabel || `ขั้นที่ ${step}`;
+          let reqTitle, reqBody;
+          if (isFinalStep) {
+            if (isGAVehicleStep && vehicleAssignment.vehicleResult === 'no_vehicle') {
+              reqTitle = '⚠️ GA แจ้ง: ไม่มีรถให้ใช้งาน';
+              reqBody = `เอกสารขอใช้รถของคุณ — GA แจ้งว่าไม่มีรถว่าง กรุณาใช้รถส่วนตัว`;
+            } else if (isGAVehicleStep && gaSelectedVehicle) {
+              const drv = gaSelectedDriver ? ` / คนขับ: ${gaSelectedDriver.nickname || gaSelectedDriver.name}` : '';
+              reqTitle = '✅ GA จัดรถให้แล้ว';
+              reqBody = `${gaSelectedVehicle.brand} ${gaSelectedVehicle.plate}${drv}`;
+            } else {
+              reqTitle = '✅ เอกสารของคุณอนุมัติครบแล้ว';
+              reqBody = `${item.topic || 'เอกสาร'} — ผ่าน ${approverLabel} เรียบร้อย`;
+            }
+          } else {
+            reqTitle = '✅ อนุมัติแล้ว — เดินหน้าต่อ';
+            reqBody = `${item.topic || 'เอกสาร'} — ${approverLabel} เซ็นแล้ว รอขั้นถัดไป`;
+          }
+          sendPushToUser(item.requesterId, {
+            title: reqTitle,
+            body: reqBody,
+            clickUrl: '/',
+          }).catch(() => {});
+        }
+      } catch (err) {
+        console.warn('Notify requester failed:', err?.message);
       }
 
       setDone(true);
     } catch (err) {
       alert('เกิดข้อผิดพลาด: ' + err.message);
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -897,12 +1002,15 @@ export default function ApprovePage({ workflowId }) {
                       const clickable = !booked && !isMaint;
                       return (
                         <div key={v.id}
-                          onClick={() => clickable && setGaSelectedVehicle(v)}
+                          onClick={clickable ? () => setGaSelectedVehicle(v) : undefined}
+                          aria-disabled={!clickable}
                           style={{
                             border: selected ? '2px solid #2563eb' : booked ? '2px solid #fca5a5' : isMaint ? '2px solid #fbbf24' : '2px solid #86efac',
                             borderRadius: 12, padding: 10, cursor: clickable ? 'pointer' : 'not-allowed',
                             background: selected ? '#eff6ff' : booked ? '#fef2f2' : isMaint ? '#fefce8' : '#f0fdf4',
                             opacity: clickable ? 1 : 0.5, transition: 'all 0.15s',
+                            pointerEvents: clickable ? 'auto' : 'none',
+                            userSelect: 'none',
                           }}
                         >
                           <div style={{ fontWeight: 700, fontSize: 13 }}>{v.brand}</div>
@@ -930,25 +1038,45 @@ export default function ApprovePage({ workflowId }) {
                       {gaDrivers.map(d => {
                         const booked = isDriverBookedGA(d.id);
                         const selected = gaSelectedDriver?.id === d.id;
-                        const clickable = !booked && d.status === 'available';
+                        const isBusy = d.status === 'busy';
+                        const isOnLeave = d.status === 'on_leave';
+                        const unavailable = booked || isBusy || isOnLeave;
+                        const clickable = !unavailable && d.status === 'available';
+                        const borderColor = selected ? '#2563eb' : isOnLeave ? '#fca5a5' : isBusy ? '#fbbf24' : booked ? '#fca5a5' : '#86efac';
+                        const bgColor = selected ? '#eff6ff' : isOnLeave ? '#fef2f2' : isBusy ? '#fef3c7' : booked ? '#fef2f2' : '#f0fdf4';
+                        const statusColor = isOnLeave ? '#dc2626' : isBusy ? '#d97706' : booked ? '#dc2626' : selected ? '#2563eb' : '#16a34a';
+                        const statusText = isOnLeave ? '🔴 ลา' : isBusy ? '🟡 ไม่ว่าง' : booked ? 'จองแล้ว' : selected ? '✓ เลือกแล้ว' : '🟢 ว่าง';
                         return (
                           <div key={d.id}
-                            onClick={() => clickable && setGaSelectedDriver(d)}
+                            onClick={clickable ? () => setGaSelectedDriver(d) : undefined}
                             style={{
-                              border: selected ? '2px solid #2563eb' : booked ? '2px solid #fca5a5' : '2px solid #86efac',
-                              borderRadius: 12, padding: 10, cursor: clickable ? 'pointer' : 'not-allowed',
-                              background: selected ? '#eff6ff' : booked ? '#fef2f2' : '#f0fdf4',
-                              opacity: clickable ? 1 : 0.5, transition: 'all 0.15s',
+                              border: `2px solid ${borderColor}`,
+                              borderRadius: 12, padding: 10,
+                              cursor: clickable ? 'pointer' : 'not-allowed',
+                              background: bgColor,
+                              opacity: clickable ? 1 : 0.65,
+                              transition: 'all 0.15s',
+                              pointerEvents: clickable ? 'auto' : 'none',
                             }}
                           >
-                            <div style={{ fontWeight: 700, fontSize: 13 }}>🧑‍✈️ {d.name} {d.licenseType && <span style={{ fontSize: 10, padding: '1px 6px', background: '#e0e7ff', color: '#4338ca', borderRadius: 4, marginLeft: 4 }}>{d.licenseType}</span>}</div>
-                            <div style={{ fontSize: 12, color: '#6b7280', marginTop: 3 }}>📞 <b>{d.phone || '-'}</b></div>
-                            {d.phoneBackup && (
-                              <div style={{ fontSize: 11, color: '#94a3b8' }}>📱 สำรอง: {d.phoneBackup}</div>
-                            )}
-                            <div style={{ fontSize: 10, fontWeight: 700, marginTop: 4, color: booked ? '#dc2626' : selected ? '#2563eb' : '#16a34a' }}>
-                              {booked ? 'ไม่ว่าง' : selected ? '✓ เลือกแล้ว' : 'ว่าง'}
+                            <div style={{ fontWeight: 700, fontSize: 13 }}>
+                              🧑‍✈️ {d.nickname ? `${d.nickname} (${d.name})` : d.name}
+                              {d.licenseType && <span style={{ fontSize: 10, padding: '1px 6px', background: '#e0e7ff', color: '#4338ca', borderRadius: 4, marginLeft: 4 }}>{d.licenseType}</span>}
                             </div>
+                            <div style={{ fontSize: 12, color: '#6b7280', marginTop: 3 }}>📞 <b>{d.phone || '-'}</b></div>
+                            <div style={{ fontSize: 10, fontWeight: 700, marginTop: 4, color: statusColor }}>
+                              {statusText}
+                            </div>
+                            {(isBusy || isOnLeave) && d.statusNote && (
+                              <div style={{ fontSize: 10, color: '#6b7280', marginTop: 2, fontStyle: 'italic' }}>
+                                📍 {d.statusNote}
+                              </div>
+                            )}
+                            {(isBusy || isOnLeave) && d.statusUntil && (
+                              <div style={{ fontSize: 10, color: '#94a3b8', marginTop: 1 }}>
+                                🕐 ถึง {d.statusUntil}
+                              </div>
+                            )}
                           </div>
                         );
                       })}
@@ -1048,9 +1176,10 @@ export default function ApprovePage({ workflowId }) {
                   <button
                     key={idx}
                     onClick={() => handleQuickApprove(sig)}
-                    style={{ display: 'flex', alignItems: 'center', gap: 12, background: '#fff', padding: '12px 16px', borderRadius: 12, border: '2px solid #d1fae5', cursor: 'pointer', width: '100%', textAlign: 'left', transition: 'all 0.2s' }}
-                    onMouseOver={e => { e.currentTarget.style.borderColor = '#16a34a'; e.currentTarget.style.background = '#f0fdf4'; }}
-                    onMouseOut={e => { e.currentTarget.style.borderColor = '#d1fae5'; e.currentTarget.style.background = '#fff'; }}
+                    disabled={submitting}
+                    style={{ display: 'flex', alignItems: 'center', gap: 12, background: '#fff', padding: '12px 16px', borderRadius: 12, border: '2px solid #d1fae5', cursor: submitting ? 'not-allowed' : 'pointer', opacity: submitting ? 0.5 : 1, width: '100%', textAlign: 'left', transition: 'all 0.2s' }}
+                    onMouseOver={e => { if (submitting) return; e.currentTarget.style.borderColor = '#16a34a'; e.currentTarget.style.background = '#f0fdf4'; }}
+                    onMouseOut={e => { if (submitting) return; e.currentTarget.style.borderColor = '#d1fae5'; e.currentTarget.style.background = '#fff'; }}
                   >
                     <img src={sig.dataUrl} alt="sig" style={{ width: 80, height: 35, objectFit: 'contain', background: '#fafafa', borderRadius: 6, border: '1px solid #eee' }} />
                     <div style={{ flex: 1 }}>
@@ -1066,9 +1195,10 @@ export default function ApprovePage({ workflowId }) {
 
           <button
             onClick={handleApprove}
-            style={{ width: '100%', padding: 16, fontSize: 18, fontWeight: 900, background: '#16a34a', color: '#fff', border: 'none', borderRadius: 16, cursor: 'pointer', marginTop: 12, minHeight: 48 }}
+            disabled={submitting}
+            style={{ width: '100%', padding: 16, fontSize: 18, fontWeight: 900, background: submitting ? '#94a3b8' : '#16a34a', color: '#fff', border: 'none', borderRadius: 16, cursor: submitting ? 'not-allowed' : 'pointer', marginTop: 12, minHeight: 48 }}
           >
-            ✓ อนุมัติเอกสาร
+            {submitting ? 'กำลังอนุมัติ...' : '✓ อนุมัติเอกสาร'}
           </button>
 
           <p style={{ textAlign: 'center', fontSize: 11, color: '#999', marginTop: 12 }}>

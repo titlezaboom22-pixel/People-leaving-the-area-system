@@ -85,6 +85,9 @@ import { app, auth, db, firebaseReady, appId } from './firebase';
 import { DEPARTMENTS, STATUS } from './constants';
 import SecurityGate from './SecurityGate';
 import GAView from './GAView';
+import DriverView from './DriverView';
+import SupportTickets from './SupportTickets';
+import LoginHelp from './LoginHelp';
 import RobotNotifier from './RobotNotifier';
 import VehicleTimeAlert from './VehicleTimeAlert';
 import {
@@ -345,6 +348,10 @@ export default function App() {
       setHostIdentity(identity);
       setRole(r);
       saveSession(identity, r);
+      // ขอสิทธิ์ + เก็บ FCM token (ไม่ block — ยิงใน background)
+      if (identity?.staffId && r !== 'GUEST') {
+        import('./fcm').then((m) => m.setupFCM(identity.staffId)).catch(() => {});
+      }
     }} />;
   }
 
@@ -356,6 +363,11 @@ export default function App() {
   // GA มีหน้าจัดรถของตัวเอง
   if (role === 'GA') {
     return <GAView user={user} onLogout={handleLogout} />;
+  }
+
+  // DRIVER มีหน้าของตัวเอง (toggle สถานะ + ดูงานวันนี้)
+  if (role === 'DRIVER') {
+    return <DriverView user={hostIdentity} onLogout={handleLogout} />;
   }
 
   return (
@@ -404,6 +416,7 @@ export default function App() {
       </main>
       <RobotNotifier role={role} hostIdentity={hostIdentity} />
       <VehicleTimeAlert userRole={role} requesterId={hostIdentity?.staffId} />
+      <SupportTickets user={hostIdentity} role={role} />
     </div>
   );
 }
@@ -445,6 +458,7 @@ function LoginScreen({ onLoginSuccess }) {
 
   return (
     <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4 sm:p-6 bg-[radial-gradient(circle_at_center,_var(--tw-gradient-stops))] from-blue-50 via-slate-50 to-slate-100 font-sans text-left overflow-x-hidden">
+      <LoginHelp />
       <div className="max-w-md w-full animate-in zoom-in-95 duration-500 font-sans">
         <div className="text-center mb-10">
           <div className="w-16 h-16 bg-blue-600 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-xl shadow-blue-200">
@@ -1197,7 +1211,7 @@ function HostView({ appointments, user, hostIdentity, role = 'HOST' }) {
 
       {signModalItem && (
         <div className="fixed inset-0 z-[120] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="w-full max-w-xl bg-white rounded-3xl border border-slate-200 p-6">
+          <div className="w-full max-w-xl bg-white rounded-3xl border border-slate-200 p-6 max-h-[90vh] overflow-y-auto">
             <h3 className="text-lg font-black text-slate-900">ลงลายเซ็นอนุมัติเอกสาร</h3>
                 <p className="text-sm text-slate-500 mt-1">
                   {signModalItem.stepLabel ? `${signModalItem.stepLabel} · ` : ''}
@@ -1226,9 +1240,30 @@ function HostView({ appointments, user, hostIdentity, role = 'HOST' }) {
                     className="w-full h-40 bg-white rounded-xl border border-dashed border-slate-300 touch-none"
                   />
                   <input ref={signUploadInputRef} type="file" accept="image/*" className="hidden" onChange={handleUploadSign} />
-                  <div className="mt-2 flex items-center justify-between gap-2">
+                  <div className="mt-2 flex items-center justify-between gap-2 flex-wrap">
                     <p className="text-[11px] text-amber-600 font-bold">⚠️ ยังไม่มีลายเซ็นสำเร็จรูป — <button onClick={() => setShowSignSetup(true)} className="underline">ตั้งลายเซ็น</button></p>
-                    <button type="button" onClick={() => signUploadInputRef.current?.click()} className="shrink-0 text-[11px] font-black px-3 py-2 rounded-lg border border-slate-200 bg-white hover:bg-slate-50">อัปโหลดรูปเซ็น</button>
+                    <div className="flex gap-1.5">
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (!signDataUrl) { alert('กรุณาวาดลายเซ็นก่อน'); return; }
+                          if (!confirm('บันทึกลายเซ็นนี้เป็นลายเซ็นประจำ?\n(จะใช้อัตโนมัติทุกครั้งที่อนุมัติ)')) return;
+                          try {
+                            if (firebaseReady && db && hostIdentity?.staffId) {
+                              const { updateDoc, doc: fsDoc } = await import('firebase/firestore');
+                              await updateDoc(fsDoc(db, 'artifacts', appId, 'public', 'data', 'users', hostIdentity.staffId), { signatureDataUrl: signDataUrl });
+                              setMySignature(signDataUrl);
+                              alert('✓ บันทึกลายเซ็นประจำเรียบร้อย');
+                            }
+                          } catch (err) { alert('บันทึกไม่สำเร็จ: ' + err.message); }
+                        }}
+                        disabled={!signDataUrl}
+                        className="shrink-0 text-[11px] font-black px-3 py-2 rounded-lg bg-emerald-500 hover:bg-emerald-600 disabled:bg-slate-200 disabled:text-slate-400 text-white"
+                      >
+                        💾 บันทึกเป็นลายเซ็นประจำ
+                      </button>
+                      <button type="button" onClick={() => signUploadInputRef.current?.click()} className="shrink-0 text-[11px] font-black px-3 py-2 rounded-lg border border-slate-200 bg-white hover:bg-slate-50">📎 อัปโหลด</button>
+                    </div>
                   </div>
                 </>
               )}
@@ -1958,12 +1993,12 @@ function HostView({ appointments, user, hostIdentity, role = 'HOST' }) {
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 font-sans text-left">
         <ServiceButton 
           icon={<Car className="text-blue-600" />} 
-          label="ใบขออนุญาตใช้รถ" 
+          label="แบบฟอร์มใบขออนุญาตใช้รถของบริษัท"
           onClick={() => window.open(`/vehicle.html?name=${encodeURIComponent(hostIdentity?.name || '')}&staffId=${encodeURIComponent(hostIdentity?.staffId || '')}&dept=${encodeURIComponent(hostIdentity?.department || '')}`, '_blank')}
         />
         <ServiceButton
           icon={<><Utensils className="text-orange-600 inline" /><Coffee className="text-emerald-600 inline ml-1" /></>}
-          label="สั่งอาหาร / เครื่องดื่ม"
+          label="แบบฟอร์มขออาหารและเครื่องดื่มบริษัท"
           onClick={() => window.open(`/drink.html?name=${encodeURIComponent(hostIdentity?.name || '')}&staffId=${encodeURIComponent(hostIdentity?.staffId || '')}&dept=${encodeURIComponent(hostIdentity?.department || '')}`, '_blank')}
         />
         <ServiceButton
@@ -4866,7 +4901,7 @@ function AdminView({ appointments, user }) {
             <div className="p-4 bg-slate-50 rounded-2xl group-hover:scale-110 transition-transform">
               <Car className="text-blue-600 w-6 h-6" />
             </div>
-            <p className="font-black text-slate-700 uppercase tracking-widest text-[10px] text-center">ใบขออนุญาตใช้รถ</p>
+            <p className="font-black text-slate-700 uppercase tracking-widest text-[10px] text-center leading-tight">แบบฟอร์มใบขอ<br/>อนุญาตใช้รถของบริษัท</p>
           </button>
           <button
             onClick={() => window.open('/drink.html', '_blank')}
@@ -4876,7 +4911,7 @@ function AdminView({ appointments, user }) {
               <Utensils className="text-orange-600 w-6 h-6" />
               <Coffee className="text-emerald-600 w-6 h-6" />
             </div>
-            <p className="font-black text-slate-700 uppercase tracking-widest text-[10px] text-center">สั่งอาหาร / เครื่องดื่ม</p>
+            <p className="font-black text-slate-700 uppercase tracking-widest text-[10px] text-center leading-tight">แบบฟอร์มขออาหาร<br/>และเครื่องดื่มบริษัท</p>
           </button>
           <button
             onClick={() => window.open('/outing.html', '_blank')}
@@ -5172,6 +5207,23 @@ function AdminView({ appointments, user }) {
                 />
               </div>
               <button
+                onClick={async () => {
+                  const { exportToExcel } = await import('./exportExcel');
+                  exportToExcel(allUsers, [
+                    { label: 'รหัสพนักงาน (Login)', value: (r) => r.docId || r.id || '' },
+                    { label: 'ชื่อ-สกุล', value: (r) => r.displayName || r.name || '' },
+                    { key: 'role', label: 'Role' },
+                    { key: 'roleType', label: 'RoleType' },
+                    { key: 'department', label: 'แผนก' },
+                    { key: 'email', label: 'Email' },
+                    { label: 'สถานะ', value: (r) => r.active === false ? 'ปิด' : 'ใช้งาน' },
+                  ], 'TBK_Users');
+                }}
+                className="bg-emerald-600 hover:bg-emerald-700 text-white px-5 py-3 rounded-2xl font-black text-xs transition flex items-center gap-2 shadow-lg active:scale-95"
+              >
+                📊 Export Excel
+              </button>
+              <button
                 onClick={() => setShowAddUserModal(true)}
                 className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-2xl font-black text-xs transition flex items-center gap-2 shadow-lg active:scale-95"
               >
@@ -5192,10 +5244,16 @@ function AdminView({ appointments, user }) {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50 font-sans text-left">
-                {filteredUsers.map((u) => (
+                {filteredUsers.map((u) => {
+                  const loginId = (u.docId || u.id || '').toString();
+                  const isRandom = /^[a-z0-9]{5,}$/.test(loginId) && !loginId.includes('-') && !loginId.includes('_');
+                  return (
                   <tr key={u.docId} className={`hover:bg-slate-50 group transition-colors font-sans ${u.active === false ? 'bg-red-50/50' : ''}`}>
                     <td className="px-6 py-4">
-                      <span className="text-sm font-mono font-black text-slate-700 uppercase">{u.docId}</span>
+                      <span className={`text-sm font-mono font-black uppercase ${isRandom ? 'text-red-500' : 'text-slate-700'}`}>{loginId}</span>
+                      {isRandom && (
+                        <p className="text-[9px] text-red-500 mt-0.5 normal-case">⚠️ ID สุ่ม · ควรแก้</p>
+                      )}
                     </td>
                     <td className="px-6 py-4">
                       <span className="text-sm font-bold text-slate-900">{u.name || '-'}</span>
@@ -5242,7 +5300,8 @@ function AdminView({ appointments, user }) {
                       </div>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
                 {filteredUsers.length === 0 && (
                   <tr>
                     <td colSpan="6" className="px-6 py-12 text-center text-slate-400 font-sans">

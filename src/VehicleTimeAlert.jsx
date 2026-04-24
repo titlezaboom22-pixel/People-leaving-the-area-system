@@ -203,6 +203,45 @@ export default function VehicleTimeAlert({ userRole, requesterId }) {
     setAlerts(prev => prev.filter((_, i) => i !== idx));
   };
 
+  // ทดสอบแจ้งเตือน — ยิง alert จำลอง + เสียง + notification (ไม่เกี่ยว Firestore)
+  const triggerTestAlert = async () => {
+    // ขอสิทธิ์ notification ก่อน (iOS ต้องทำตอน user interaction)
+    if ('Notification' in window && Notification.permission === 'default') {
+      try { await Notification.requestPermission(); } catch {}
+    }
+
+    const testAlert = {
+      bookingId: `test-${Date.now()}`,
+      plate: 'ทดสอบ-1234',
+      brand: 'TEST',
+      requester: 'ทดสอบระบบ',
+      driverName: 'ขับเอง',
+      driverPhone: '',
+      timeEnd: new Date(Date.now() + 10 * 60_000).toTimeString().slice(0, 5),
+      minutesLeft: 10,
+      createdAt: new Date().toISOString(),
+      isTest: true,
+    };
+    setAlerts(prev => [testAlert, ...prev]);
+    setShowPanel(true);
+    audioRef.current?.play();
+
+    if ('Notification' in window && Notification.permission === 'granted') {
+      try {
+        new Notification('⏰ ทดสอบ: รถใกล้ถึงเวลาเก็บ!', {
+          body: `🚗 TEST ทดสอบ-1234\n👤 ทดสอบระบบ\n⏱️ เหลือ 10 นาที`,
+          icon: '/images/icon-192.png',
+          badge: '/images/icon-192.png',
+          tag: testAlert.bookingId,
+          requireInteraction: true,
+          vibrate: [200, 100, 200, 100, 200],
+        });
+      } catch (err) {
+        console.warn('Test notification failed:', err);
+      }
+    }
+  };
+
   // Show for GA, ADMIN, HOST, EMPLOYEE
   const showBell = userRole === 'GA' || userRole === 'ADMIN' || userRole === 'HOST' || userRole === 'EMPLOYEE';
   if (!showBell) return null;
@@ -250,6 +289,17 @@ export default function VehicleTimeAlert({ userRole, requesterId }) {
                 <X size={18} />
               </button>
             </div>
+          </div>
+
+          {/* Test button */}
+          <div className="px-3 pt-3">
+            <button
+              onClick={triggerTestAlert}
+              className="w-full bg-emerald-500 hover:bg-emerald-600 active:scale-95 text-white text-sm font-black py-3 rounded-xl transition shadow-lg shadow-emerald-200 flex items-center justify-center gap-2"
+            >
+              <BellRing size={18} />
+              🔔 ทดสอบแจ้งเตือน
+            </button>
           </div>
 
           {/* Alert List */}
@@ -304,12 +354,25 @@ export default function VehicleTimeAlert({ userRole, requesterId }) {
                   {/* ปุ่มรถกลับแล้ว — กดเพื่อบันทึกเลขไมล์ + รูป */}
                   <button
                     onClick={() => {
-                      const b = activeBookings.find((bk) => bk.id === alert.bookingId);
-                      if (b) setReturnModalBooking(b);
+                      if (alert.isTest) {
+                        // test alert → ใช้ดัมมี่ booking (ไม่เขียน Firestore)
+                        setReturnModalBooking({
+                          id: alert.bookingId,
+                          plate: alert.plate,
+                          brand: alert.brand,
+                          timeEnd: alert.timeEnd,
+                          requesterName: alert.requester,
+                          isTest: true,
+                        });
+                      } else {
+                        const b = activeBookings.find((bk) => bk.id === alert.bookingId);
+                        if (b) setReturnModalBooking(b);
+                      }
                     }}
                     className="mt-2 w-full flex items-center justify-center gap-1.5 bg-emerald-500 hover:bg-emerald-600 text-white text-xs font-black py-2 rounded-lg transition active:scale-95"
                   >
                     <CheckCircle2 size={14} /> รถกลับแล้ว + บันทึกเลขไมล์
+                    {alert.isTest && <span className="ml-1 bg-white/30 px-1.5 py-0.5 rounded text-[9px]">TEST</span>}
                   </button>
                 </div>
               ))

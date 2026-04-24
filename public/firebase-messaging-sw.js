@@ -13,18 +13,20 @@ firebase.initializeApp({
 const messaging = firebase.messaging();
 
 messaging.onBackgroundMessage((payload) => {
-  const title = payload.notification?.title || 'SOC Systems';
+  const title = payload.notification?.title || 'TBK SOC';
   const options = {
     body: payload.notification?.body || 'มีการแจ้งเตือนใหม่',
-    icon: '/icon-192.svg',
-    badge: '/icon-192.svg',
+    icon: '/images/icon-192.png',
+    badge: '/images/icon-192.png',
     data: payload.data,
+    requireInteraction: true,
+    vibrate: [200, 100, 200],
   };
   self.registration.showNotification(title, options);
 });
 
 self.addEventListener('notificationclick', (event) => {
   event.notification.close();
-  const url = event.notification.data?.url || '/';
+  const url = event.notification.data?.clickUrl || event.notification.data?.url || '/';
   event.waitUntil(clients.openWindow(url));
 });

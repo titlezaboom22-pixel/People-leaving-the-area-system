@@ -1,0 +1,8 @@
+[{
+      "relation": ["delegate_permission/common.handle_all_urls"],
+      "target": {
+        "namespace": "android_app",
+        "package_name": "app.web.tbkk_system.twa",
+        "sha256_cert_fingerprints": ["52:5B:FA:85:5D:D2:3B:3B:F3:5D:7B:10:E9:96:12:50:0C:D3:09:C0:D1:9E:9F:C2:38:5D:AC:5A:A2:AC:A2:D2"]
+      }
+    }]

@@ -51,8 +51,16 @@ export default function ReturnVehicleModal({ open, booking, currentUserId, onClo
     setSaving(true);
     setErr('');
     try {
-      const ref = doc(db, 'artifacts', appId, 'public', 'data', 'vehicle_bookings', booking.id);
       const returnedAt = new Date().toISOString();
+      // Test mode: ข้าม Firestore write — แค่เทส UI + กล้อง + กรอกเลขไมล์
+      if (booking.isTest) {
+        await new Promise((r) => setTimeout(r, 500));
+        alert(`🧪 TEST สำเร็จ!\nเลขไมล์: ${mileage} กม.\n(ไม่ได้บันทึกลง Firestore)`);
+        onSaved?.({ ...booking, returned: true, returnedAt, returnMileage: Number(mileage) });
+        onClose();
+        return;
+      }
+      const ref = doc(db, 'artifacts', appId, 'public', 'data', 'vehicle_bookings', booking.id);
       await updateDoc(ref, {
         returned: true,
         returnedAt,

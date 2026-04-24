@@ -80,7 +80,7 @@ export async function authenticateUser(staffId, password) {
   const normalizedId = (staffId || '').trim().toUpperCase();
   if (!normalizedId) throw new Error('กรุณากรอกรหัสพนักงาน');
   if (!password) throw new Error('กรุณากรอกรหัสผ่าน');
-  if (password.length < 6) throw new Error('รหัสผ่านต้องมีอย่างน้อย 6 ตัวอักษร');
+  if (password.length < 4) throw new Error('รหัสผ่านต้องมีอย่างน้อย 4 ตัวอักษร');
 
   if (!firebaseReady || !db) {
     throw new Error('ระบบยังไม่พร้อม กรุณาตั้งค่า Firebase ก่อนใช้งาน');

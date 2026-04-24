@@ -15,6 +15,14 @@ import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+async function hashPassword(plain) {
+  const encoder = new TextEncoder();
+  const data = encoder.encode(plain);
+  const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+  const hashArray = Array.from(new Uint8Array(hashBuffer));
+  return hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 function loadEnv() {
   try {
     const envPath = resolve(__dirname, '..', '.env');
@@ -34,14 +42,19 @@ function loadEnv() {
   }
 }
 
-// ข้อมูลคนขับ — เปลี่ยนเป็นข้อมูลจริงได้ที่ Admin หรือแก้ไฟล์นี้
-// phone = เบอร์หลัก, phoneBackup = เบอร์สำรอง (เผื่อติดต่อไม่ได้)
+// ข้อมูลคนขับจริง TBKK — 10 คน (ทีมรถส่วนกลาง)
+// phone = เบอร์โทรหลัก, nickname = ชื่อเล่น
 const drivers = [
-  { id: 'DRV001', name: 'สมชาย ใจดี',     phone: '081-234-5678', phoneBackup: '02-111-2222', licenseType: 'ท2', status: 'available' },
-  { id: 'DRV002', name: 'สมปอง มีสุข',    phone: '082-345-6789', phoneBackup: '02-111-2233', licenseType: 'ท2', status: 'available' },
-  { id: 'DRV003', name: 'วิชัย ขยันขัน',  phone: '083-456-7890', phoneBackup: '02-111-2244', licenseType: 'ท3', status: 'available' },
-  { id: 'DRV004', name: 'ประยุทธ์ สุขสันต์', phone: '084-567-8901', phoneBackup: '02-111-2255', licenseType: 'ท2', status: 'available' },
-  { id: 'DRV005', name: 'อนุชา รักการงาน', phone: '085-678-9012', phoneBackup: '02-111-2266', licenseType: 'ท2', status: 'available' },
+  { id: 'DRV001', name: 'ณรงค์ศักดิ์ เพชรชนะ',     nickname: 'เอ็ม',  phone: '085-821-0160', licenseType: 'ท2', status: 'available' },
+  { id: 'DRV002', name: 'สุวิทย์ ประสัพแพงศรี',    nickname: 'วิทย์', phone: '085-818-7740', licenseType: 'ท2', status: 'available' },
+  { id: 'DRV003', name: 'ณัฐกิต เดชอุดม',          nickname: 'ต้น',   phone: '094-847-1623', licenseType: 'ท2', status: 'available' },
+  { id: 'DRV004', name: 'ประเมษฐ์ ไทยธรรมฐิติกุล', nickname: 'แหบ',   phone: '095-492-4109', licenseType: 'ท2', status: 'available' },
+  { id: 'DRV005', name: 'วัฒนา ภูเกษ',              nickname: 'แจ๊ค',  phone: '098-403-5357', licenseType: 'ท2', status: 'available' },
+  { id: 'DRV006', name: 'วิชาญ อุปทัง',             nickname: 'ชาญ',   phone: '061-438-1108', licenseType: 'ท2', status: 'available' },
+  { id: 'DRV007', name: 'นพชัย ทองนุ่ม',            nickname: 'นพ',    phone: '098-290-7453', licenseType: 'ท2', status: 'available' },
+  { id: 'DRV008', name: 'ด่วน อินทนาม',             nickname: 'ด่วน',  phone: '096-841-3811', licenseType: 'ท2', status: 'available' },
+  { id: 'DRV009', name: 'สุริโย ใจแปง',             nickname: 'โย',    phone: '063-128-8896', licenseType: 'ท2', status: 'available' },
+  { id: 'DRV010', name: 'ลือชัย ด่านขุดทด',         nickname: 'เติ้ล', phone: '065-563-9488', licenseType: 'ท2', status: 'available' },
 ];
 
 async function main() {
@@ -74,17 +87,39 @@ async function main() {
   console.log(`จำนวนคนขับ: ${drivers.length}`);
   console.log('');
 
+  // Password สำหรับคนขับทุกคน (เหมือน EMP/HEAD = TBK@2026)
+  const driverPassword = await hashPassword('TBK@2026');
+
   for (const driver of drivers) {
+    // 1. บันทึกข้อมูลคนขับใน drivers/
     const docRef = doc(db, 'artifacts', appIdValue, 'public', 'data', 'drivers', driver.id);
     await setDoc(docRef, {
       ...driver,
+      statusNote: '',
+      statusUntil: null,
       createdAt: Timestamp.now(),
     });
+
+    // 2. สร้าง user account ใน users/ เพื่อให้ login ได้
+    const userRef = doc(db, 'artifacts', appIdValue, 'public', 'data', 'users', driver.id);
+    await setDoc(userRef, {
+      id: driver.id,
+      displayName: `${driver.nickname} (${driver.name})`,
+      role: 'DRIVER',
+      roleType: 'DRIVER',
+      department: 'GA',
+      passwordHash: driverPassword,
+      active: true,
+      driverId: driver.id,  // link กลับไปที่ drivers/
+    });
+
     console.log(`  ✓ ${driver.id} - ${driver.name} (${driver.phone}) [${driver.status}]`);
   }
 
   console.log('');
-  console.log(`Seed เสร็จ! (${drivers.length} drivers)`);
+  console.log(`Seed เสร็จ! (${drivers.length} drivers + ${drivers.length} user accounts)`);
+  console.log('');
+  console.log('รหัสผ่านคนขับทุกคน: TBK@2026');
   process.exit(0);
 }
 

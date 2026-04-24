@@ -46,6 +46,7 @@ const COLLECTIONS_TO_CLEAR = [
   'goods_inout_logs',
   'visitor_logs',
   'outing_logs',
+  'vehicle_bookings',
 ];
 
 let totalDeleted = 0;

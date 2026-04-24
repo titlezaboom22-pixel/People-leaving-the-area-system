@@ -15,6 +15,8 @@ import { WORKFLOW_ROUTES, SPECIAL_EMAILS } from './constants';
 import { LogOut, Truck, Car, User, Phone, CheckCircle, XCircle, Clock, Coffee, UtensilsCrossed, Check, Download, FileSpreadsheet, AlertTriangle, MapPin, Package, FileText } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import VehicleTimeAlert from './VehicleTimeAlert';
+import SupportTickets from './SupportTickets';
+import PoolCarRecord from './PoolCarRecord';
 import { notifyWorkflowCompleted } from './notifyEmail';
 
 export default function GAView({ user, onLogout }) {
@@ -485,6 +487,11 @@ export default function GAView({ user, onLogout }) {
         {/* Vehicle Tab */}
         {activeTab === 'vehicle' && (
           <>
+          {/* Pool Car Record button */}
+          <div className="mb-4 flex justify-end">
+            <PoolCarRecord />
+          </div>
+
           {/* Vehicle Status Dashboard */}
           <div className="mb-6 bg-white rounded-2xl shadow-sm border border-slate-200 p-5">
             <h2 className="font-black text-slate-800 text-sm flex items-center gap-2 mb-4">
@@ -695,21 +702,31 @@ export default function GAView({ user, onLogout }) {
                           {drivers.map(d => {
                             const booked = reqDate ? isDriverBooked(d.id, reqDate) : false;
                             const selected = selectedDriver?.id === d.id;
-                            const clickable = !booked && d.status === 'available';
+                            const isBusy = d.status === 'busy';
+                            const isOnLeave = d.status === 'on_leave';
+                            const unavailable = booked || isBusy || isOnLeave;
+                            const clickable = !unavailable && d.status === 'available';
+                            const cardClass = selected ? 'border-purple-600 bg-purple-50 ring-2 ring-purple-200 shadow-lg'
+                              : isOnLeave ? 'border-red-300 bg-red-50 opacity-60'
+                              : isBusy ? 'border-amber-300 bg-amber-50 opacity-70'
+                              : booked ? 'border-red-300 bg-red-50 opacity-50'
+                              : 'border-emerald-300 bg-emerald-50 hover:border-purple-400 hover:shadow-md';
+                            const statusText = isOnLeave ? '🔴 ลา' : isBusy ? '🟡 ไม่ว่าง' : booked ? '❌ จองแล้ว' : selected ? '✅ เลือกแล้ว' : '🟢 ว่าง';
+                            const statusColor = isOnLeave ? 'text-red-600' : isBusy ? 'text-amber-600' : booked ? 'text-red-600' : selected ? 'text-purple-600' : 'text-emerald-600';
                             return (
                               <div key={d.id}
-                                onClick={() => clickable && setSelectedDriver(d)}
-                                className={`border-2 rounded-xl p-3 transition-all cursor-pointer ${
-                                  selected ? 'border-purple-600 bg-purple-50 ring-2 ring-purple-200 shadow-lg' :
-                                  booked ? 'border-red-300 bg-red-50 opacity-50 cursor-not-allowed' :
-                                  'border-emerald-300 bg-emerald-50 hover:border-purple-400 hover:shadow-md'
-                                }`}
+                                onClick={clickable ? () => setSelectedDriver(d) : undefined}
+                                className={`border-2 rounded-xl p-3 transition-all ${cardClass}`}
+                                style={{ cursor: clickable ? 'pointer' : 'not-allowed', pointerEvents: clickable ? 'auto' : 'none' }}
                               >
-                                <div className="font-bold text-sm">🧑‍✈️ {d.name}</div>
+                                <div className="font-bold text-sm">🧑‍✈️ {d.nickname ? `${d.nickname} (${d.name})` : d.name}</div>
                                 <div className="text-xs text-slate-500 flex items-center gap-1"><Phone size={10} /> {d.phone}</div>
-                                <div className={`text-[10px] font-bold mt-1 ${booked ? 'text-red-600' : selected ? 'text-purple-600' : 'text-emerald-600'}`}>
-                                  {booked ? '❌ ไม่ว่าง' : selected ? '✅ เลือกแล้ว' : '✅ ว่าง'}
+                                <div className={`text-[10px] font-bold mt-1 ${statusColor}`}>
+                                  {statusText}
                                 </div>
+                                {(isBusy || isOnLeave) && d.statusNote && (
+                                  <div className="text-[10px] text-slate-600 mt-1 italic">📍 {d.statusNote}</div>
+                                )}
                               </div>
                             );
                           })}
@@ -1134,6 +1151,7 @@ export default function GAView({ user, onLogout }) {
         )}
       </main>
       <VehicleTimeAlert userRole="GA" />
+      <SupportTickets user={user} role="GA" />
     </div>
   );
 }

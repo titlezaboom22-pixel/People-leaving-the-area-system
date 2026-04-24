@@ -14,3 +14,14 @@ dist
 
 # OS
 Thumbs.db
+
+# PWA APK signing keys (ห้าม commit!)
+*.keystore
+signing-key-info.txt
+tmp_pwa_zip/
+tmp_ios_zip/
+
+# Firebase Admin SDK service account (ห้าม commit!)
+server/firebase-admin-key.json
+firebase-admin-key.json
+*-firebase-adminsdk-*.json

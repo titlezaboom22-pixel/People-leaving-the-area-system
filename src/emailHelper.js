@@ -35,6 +35,47 @@ async function sendViaBackendServer({ to, subject, html, text }) {
 }
 
 /**
+ * ส่ง FCM push ไปยังผู้ใช้ตาม staffId — อ่าน fcmTokens จาก users/{staffId}
+ * @param {string} staffId — รหัสผู้รับ
+ * @param {string} title — หัวข้อ notification
+ * @param {string} body — เนื้อหา notification
+ * @param {string} clickUrl — URL เปิดเมื่อกด notification
+ */
+export async function sendPushToUser(staffId, { title, body, clickUrl }) {
+  if (!staffId || !firebaseReady || !db) return { ok: false, reason: 'no-staff-or-db' };
+  try {
+    // อ่าน fcmTokens จาก Firestore
+    const { doc, getDoc } = await import('firebase/firestore');
+    const userRef = doc(db, 'artifacts', appId, 'public', 'data', 'users', staffId);
+    const snap = await getDoc(userRef);
+    if (!snap.exists()) return { ok: false, reason: 'user-not-found' };
+    const tokens = snap.data().fcmTokens || [];
+    if (tokens.length === 0) return { ok: false, reason: 'no-tokens' };
+
+    const res = await fetch(`${EMAIL_API}/api/send-push`, {
+      method: 'POST',
+      headers: authHeaders(),
+      body: JSON.stringify({ tokens, title, body, data: { clickUrl: clickUrl || '' } }),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return { ok: false, reason: `http-${res.status}` };
+    const data = await res.json();
+
+    // ลบ invalid tokens ออกจาก user doc
+    if (data.invalidTokens?.length > 0) {
+      try {
+        const { updateDoc, arrayRemove } = await import('firebase/firestore');
+        await updateDoc(userRef, { fcmTokens: arrayRemove(...data.invalidTokens) });
+      } catch {}
+    }
+
+    return { ok: data.success, sent: data.sent, failed: data.failed };
+  } catch (err) {
+    return { ok: false, reason: 'error', error: err?.message };
+  }
+}
+
+/**
  * ตรวจ rate limit สำหรับ public form (guest)
  * Returns true = ยอมให้ submit, false = เกิน limit แล้ว
  */
@@ -377,9 +418,16 @@ export function buildEmailHtml(formType, data, approveUrl, requesterSign) {
 
 /**
  * สร้าง HTML body สำหรับส่งผ่าน EmailJS — มีปุ่ม clickable + ตาราง + สวยงาม
+ *
+ * @param {string} formType — ใช้ตัดสินว่ามี "💰 ยอดรวม" แถวหรือไม่
+ *                            (food/drink เท่านั้น — ใบขอใช้รถ/ออกนอก/ของเข้า-ออกไม่มียอดเงิน)
  */
-function buildEmailJsHtml({ formName, name, dept, rowCount, grandTotal, itemsHtml, approveUrl, dateStr, timeStr }) {
+function buildEmailJsHtml({ formName, formType, name, dept, rowCount, grandTotal, itemsHtml, approveUrl, dateStr, timeStr }) {
+  const hasAmountField = ['DRINK_ORDER', 'FOOD_ORDER', 'DRINK_FOOD_ORDER'].includes(formType);
   const totalDisplay = typeof grandTotal === 'number' ? `฿${grandTotal.toLocaleString()}` : '(รอ GA กำหนดราคา)';
+  const totalRowHtml = hasAmountField
+    ? `<tr><td style="padding:6px 0;color:#64748b">💰 ยอดรวม</td><td style="padding:6px 0;font-weight:700;color:#b45309;font-size:16px">${totalDisplay}</td></tr>`
+    : '';
   return `
 <div style="font-family:'Segoe UI',Tahoma,sans-serif;max-width:600px;margin:0 auto;background:#f8fafc;padding:24px">
   <div style="background:#fff;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.08)">
@@ -401,7 +449,7 @@ function buildEmailJsHtml({ formName, name, dept, rowCount, grandTotal, itemsHtm
         <tr><td style="padding:6px 0;color:#64748b;width:110px">👤 ผู้ขอ</td><td style="padding:6px 0;font-weight:600">${name}</td></tr>
         <tr><td style="padding:6px 0;color:#64748b">🏢 แผนก</td><td style="padding:6px 0">${dept}</td></tr>
         <tr><td style="padding:6px 0;color:#64748b">📅 ส่งเมื่อ</td><td style="padding:6px 0">${dateStr} ${timeStr} น.</td></tr>
-        <tr><td style="padding:6px 0;color:#64748b">💰 ยอดรวม</td><td style="padding:6px 0;font-weight:700;color:#b45309;font-size:16px">${totalDisplay}</td></tr>
+        ${totalRowHtml}
       </table>
 
       ${itemsHtml || ''}
@@ -533,7 +581,7 @@ export async function copyHtmlAndOpenOutlook({ to, subject, formType, data, appr
   // Build pretty HTML once — reused by backend/EmailJS/clipboard
   const itemsHtml = buildItemsHtml(formType, data);
   const htmlContent = buildEmailJsHtml({
-    formName, name, dept, rowCount, grandTotal, itemsHtml, approveUrl, dateStr, timeStr,
+    formName, formType, name, dept, rowCount, grandTotal, itemsHtml, approveUrl, dateStr, timeStr,
   });
 
   // Clean plain-text version — URL at very end, alone on line, NO emoji/char adjacent
