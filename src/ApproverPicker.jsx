@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { collection, getDocs, query, where } from 'firebase/firestore';
 import { db, firebaseReady, appId } from './firebase';
-import { normalizeDepartment } from './constants';
+import { normalizeDepartment, VEHICLE_MIN_APPROVAL_LEVEL, VEHICLE_MAX_APPROVAL_LEVEL, APPROVAL_LEVEL_LABELS } from './constants';
 
 /**
  * Modal ให้ผู้ส่งฟอร์มเลือกหัวหน้าผู้อนุมัติ + เห็นสถานะอยู่/ไม่อยู่ ก่อนส่ง
@@ -35,7 +35,12 @@ export default function ApproverPicker({ open, department, onPick, onClose }) {
         const list = snap.docs
           .map((d) => ({ id: d.id, ...d.data() }))
           .filter((u) => u.active !== false)
-          .filter((u) => normalizeDepartment(u.department) === target);
+          .filter((u) => normalizeDepartment(u.department) === target)
+          // กรองเฉพาะคนที่มี approvalLevel <= 8 (Supervisor ขึ้นไป — TBKK level inverted)
+          .filter((u) => {
+            const lv = Number(u.approvalLevel || 0);
+            return lv >= VEHICLE_MIN_APPROVAL_LEVEL && lv <= VEHICLE_MAX_APPROVAL_LEVEL;
+          });
         if (!cancelled) setApprovers(list);
       } catch (e) {
         if (!cancelled) setErr(e.message || 'โหลดรายชื่อไม่สำเร็จ');
@@ -71,7 +76,10 @@ export default function ApproverPicker({ open, department, onPick, onClose }) {
           {loading && <p className="text-sm text-slate-500 text-center py-6">กำลังโหลด…</p>}
           {err && <p className="text-sm text-red-600 text-center py-6">{err}</p>}
           {!loading && !err && approvers.length === 0 && (
-            <p className="text-sm text-slate-500 text-center py-6">ไม่พบหัวหน้าของแผนกนี้</p>
+            <div className="text-center py-6">
+              <p className="text-sm text-slate-500">ไม่พบหัวหน้าที่มีสิทธิ์อนุมัติของแผนกนี้</p>
+              <p className="text-[11px] text-slate-400 mt-1">(ต้องเป็นระดับ Supervisor ขึ้นไป — level ≤ {VEHICLE_MAX_APPROVAL_LEVEL})</p>
+            </div>
           )}
           <div className="space-y-2">
             {approvers.map((u) => {
@@ -87,7 +95,12 @@ export default function ApproverPicker({ open, department, onPick, onClose }) {
                   <span className="flex-1 min-w-0">
                     <div className="font-black text-slate-900 truncate">{u.displayName || u.id}</div>
                     <div className="text-[11px] text-slate-600 truncate">{u.email || '— ไม่มี email —'}</div>
-                    <div className="text-[11px] font-bold mt-0.5">{m.label}</div>
+                    <div className="flex items-center gap-2 mt-0.5">
+                      <span className="text-[11px] font-bold">{m.label}</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200 font-bold">
+                        Lv.{u.approvalLevel || '?'} {APPROVAL_LEVEL_LABELS[u.approvalLevel] ? `· ${APPROVAL_LEVEL_LABELS[u.approvalLevel].split(' ')[0]}` : ''}
+                      </span>
+                    </div>
                   </span>
                 </button>
               );

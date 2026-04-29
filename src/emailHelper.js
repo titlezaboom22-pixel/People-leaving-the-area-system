@@ -31,6 +31,10 @@ async function sendViaBackendServer({ to, subject, html, text }) {
   });
   const data = await res.json();
   if (!data.success) throw new Error(data.error || 'Backend email failed');
+  // 🚨 Demo mode = SMTP creds ไม่ได้ตั้ง — ระบบไม่ได้ส่งจริง! ต้อง throw เพื่อ fallback ไป mailto:
+  if (data.demo === true) {
+    throw new Error('SMTP_NOT_CONFIGURED: Server is in demo mode (no SMTP credentials)');
+  }
   return data;
 }
 
@@ -454,12 +458,21 @@ function buildEmailJsHtml({ formName, formType, name, dept, rowCount, grandTotal
 
       ${itemsHtml || ''}
 
-      <!-- Big CTA Button -->
-      <div style="text-align:center;margin:28px 0 12px">
-        <a href="${approveUrl}" target="_blank" style="display:inline-block;background:linear-gradient(135deg,#16a34a 0%,#15803d 100%);color:#fff;padding:16px 40px;border-radius:10px;text-decoration:none;font-weight:700;font-size:16px;box-shadow:0 4px 12px rgba(22,163,74,.3)">
-          ✅ ดูเอกสาร และ เซ็นอนุมัติ
-        </a>
-      </div>
+      <!-- Big CTA Button — table-based for max email client compat -->
+      <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="margin:28px auto 12px">
+        <tr>
+          <td align="center" bgcolor="#16a34a" style="background:#16a34a;border-radius:10px">
+            <a href="${approveUrl}" target="_blank" style="display:inline-block;padding:18px 48px;color:#ffffff;text-decoration:none;font-weight:bold;font-size:18px;font-family:Arial,sans-serif;background:#16a34a;border-radius:10px;border:2px solid #15803d;line-height:1">
+              <span style="color:#ffffff;font-weight:bold">✅ กดเพื่อเซ็นอนุมัติ</span>
+            </a>
+          </td>
+        </tr>
+        <tr>
+          <td align="center" style="padding-top:8px">
+            <span style="font-size:13px;color:#64748b;font-family:Arial,sans-serif">👉 Click to Approve Document</span>
+          </td>
+        </tr>
+      </table>
 
       <div style="text-align:center;font-size:12px;color:#64748b;margin-top:8px">
         ✅ ไม่ต้อง Login &nbsp;•&nbsp; 📱 เปิดจากมือถือได้ &nbsp;•&nbsp; ✍️ เซ็นลายมือบนหน้าจอ
@@ -584,20 +597,41 @@ export async function copyHtmlAndOpenOutlook({ to, subject, formType, data, appr
     formName, formType, name, dept, rowCount, grandTotal, itemsHtml, approveUrl, dateStr, timeStr,
   });
 
+  // ตรวจว่าเป็นการส่งหลายคนไหม (จะใส่ note "ใครก่อนก็ได้")
+  const isMultiRecipient = (to || '').split(',').filter(s => s.trim()).length > 1;
+
+  // Icon ตามประเภทเอกสาร
+  const formIcon = {
+    VEHICLE_BOOKING: '🚗',
+    DRINK_ORDER: '☕',
+    FOOD_ORDER: '🍱',
+    DRINK_FOOD_ORDER: '🍱',
+    OUTING_REQUEST: '🚪',
+    GOODS_IN_OUT: '📦',
+    EQUIPMENT: '🔧',
+  }[formType] || '📋';
+
   // Clean plain-text version — URL at very end, alone on line, NO emoji/char adjacent
   // This maximizes Outlook's auto-linkify detection chance
   const plainBody =
-    `มีเอกสารใหม่รอเซ็นอนุมัติ\r\n\r\n` +
-    `เอกสาร: ${formName}${rowCount > 0 ? ` (${rowCount} รายการ)` : ''}\r\n` +
-    `ผู้ขอ: ${name}\r\n` +
-    `แผนก: ${dept}\r\n` +
-    `ส่งเมื่อ: ${dateStr} ${timeStr} น.\r\n` +
-    (typeof grandTotal === 'number' ? `ยอดรวม: ${grandTotal.toLocaleString()} บาท\r\n` : '') +
-    `\r\n--\r\n` +
-    `SOC Systems - TBKK Group\r\n` +
-    `ระบบอนุมัติเอกสารออนไลน์\r\n` +
+    `${formIcon} TBKK ระบบ${formName} — รอท่านอนุมัติ\r\n` +
+    `═══════════════════════════════════════\r\n\r\n` +
+    `สวัสดีครับ/ค่ะ\r\n\r\n` +
+    `มี"ใบ${formName}"จากพนักงานในแผนกของท่าน รอท่านพิจารณาอนุมัติครับ\r\n\r\n` +
+    (isMultiRecipient ? `⚠️ อีเมลนี้ส่งให้หัวหน้าหลายท่านพร้อมกัน — ใครเห็นก่อนกดอนุมัติได้เลย ไม่ต้องรอกัน\r\n\r\n` : '') +
+    `┌─ รายละเอียด ─────────────────────┐\r\n` +
+    `│ ประเภทเอกสาร: ${formName}\r\n` +
+    `│ ผู้ขอ: ${name}\r\n` +
+    `│ แผนก: ${dept}\r\n` +
+    `│ ส่งเมื่อ: ${dateStr} ${timeStr} น.\r\n` +
+    (rowCount > 0 ? `│ รายการ: ${rowCount} รายการ\r\n` : '') +
+    (typeof grandTotal === 'number' ? `│ ยอดรวม: ${grandTotal.toLocaleString()} บาท\r\n` : '') +
+    `└──────────────────────────────────┘\r\n` +
+    `\r\n═══════════════════════════════════════\r\n` +
+    `📌 TBKK SOC Systems — ระบบจัดการเอกสารออนไลน์\r\n` +
+    `   no-reply@tbkk.co.th\r\n` +
     (approveUrl
-      ? `\r\nกดลิงก์ด้านล่างเพื่อเซ็นอนุมัติ (ไม่ต้อง Login)\r\n\r\n${approveUrl}`
+      ? `\r\n👇 กดลิงก์ด้านล่างเพื่อเซ็นอนุมัติทันที (ไม่ต้อง Login)\r\n\r\n${approveUrl}`
       : '');
   // ↑ URL is the LAST thing, alone on its own line, with blank line before
   // Outlook auto-linkify REQUIRES clear URL boundaries (whitespace/newline on both sides)
@@ -634,21 +668,47 @@ export async function copyHtmlAndOpenOutlook({ to, subject, formType, data, appr
     }
   }
 
-  // ========== (3) Fallback: ไม่เปิด Outlook แล้ว — แสดง error toast + log แทน ==========
-  // เหตุผล: บน production (HTTPS) ไม่สามารถเรียก http://localhost:3001 ได้
-  //         การเปิด Outlook ทำให้ผู้ใช้สับสน (กำลังกรอกฟอร์ม → จอกระตุก + Outlook เด้งขึ้น)
-  //         ดังนั้นถ้าทุก layer ล้ม ให้แจ้ง error เงียบๆ แทน (ระบบยังเซฟเอกสารลง Firestore สำเร็จ)
-  console.error('❌ All email channels failed — SMTP + EmailJS both unavailable');
-  console.error(`   Target: ${to}`);
-  console.error(`   Subject: ${subject}`);
-  showToast({
-    title: '⚠️ เอกสารบันทึกแล้ว แต่ส่งอีเมลไม่สำเร็จ',
-    msg: `ไม่สามารถติดต่อ email server ได้ (Backend SMTP + EmailJS ล้ม)<br>เอกสารยังอยู่ในระบบ → ผู้อนุมัติเปิดหน้าเว็บได้ตรงๆ<br><br><small>ติดต่อ IT ถ้าปัญหาเกิดบ่อย</small>`,
-    color: '#dc2626',
-    duration: 8000,
-  });
+  // ========== (3) Fallback: เปิด Outlook ของผู้ขอเองด้วย mailto: ==========
+  // ผู้ขอจะเห็น Outlook เด้งขึ้น พร้อมเนื้อหา email ที่กรอกไว้แล้ว
+  // เพียงกด "Send" ใน Outlook → email ออกจาก email ของผู้ขอเอง (From: คนที่กรอกฟอร์ม)
+  console.warn('📧 ทุก auto-channel ล้ม — เปิด Outlook ให้ผู้ขอกด Send เองแทน');
+  console.warn(`   Target: ${to}`);
 
-  return { ok: false, method: 'failed', reason: 'all-channels-failed' };
+  try {
+    // คัดลอก HTML ลง clipboard ก่อน — เผื่อ user ต้อง paste ใน Outlook
+    if (navigator.clipboard && window.ClipboardItem) {
+      const blob = new Blob([htmlContent], { type: 'text/html' });
+      const textBlob = new Blob([plainBody], { type: 'text/plain' });
+      try {
+        await navigator.clipboard.write([new ClipboardItem({ 'text/html': blob, 'text/plain': textBlob })]);
+      } catch {
+        // Fallback: just text
+        await navigator.clipboard.writeText(plainBody);
+      }
+    }
+
+    // เปิด Outlook ด้วย mailto: link — body เป็น plain text (Outlook จะใช้ default formatting)
+    const mailtoUrl = `mailto:${encodeURIComponent(to)}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(plainBody)}`;
+    // ใช้ window.location.href แทน window.open — กัน popup blocker
+    window.location.href = mailtoUrl;
+
+    showToast({
+      title: '📧 เปิด Outlook ให้แล้ว — กด Send ใน Outlook',
+      msg: `เนื้อหาคัดลอกไว้ใน clipboard แล้ว ถ้า Outlook ไม่เด้งขึ้น สามารถ paste (Ctrl+V) ลง email ใหม่ก็ได้<br><br>ส่งจาก: <b>email ของคุณเอง</b><br>ถึง: ${to}`,
+      color: '#2563eb',
+      duration: 10000,
+    });
+    return { ok: true, method: 'mailto-outlook' };
+  } catch (err) {
+    console.error('❌ Even mailto: fallback failed:', err);
+    showToast({
+      title: '⚠️ เอกสารบันทึกแล้ว แต่ส่งอีเมลไม่สำเร็จ',
+      msg: `เปิด Outlook ไม่ได้<br>เอกสารยังอยู่ในระบบ → ผู้อนุมัติเปิดหน้าเว็บได้ตรงๆ`,
+      color: '#dc2626',
+      duration: 8000,
+    });
+    return { ok: false, method: 'failed', reason: 'all-channels-failed' };
+  }
 }
 
 // Reusable toast helper

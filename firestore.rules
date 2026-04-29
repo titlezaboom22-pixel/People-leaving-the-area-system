@@ -89,7 +89,12 @@ service cloud.firestore {
       allow create, update: if isAuthed()
         && okString('requesterName', 100)
         && okString('department', 120)
-        && okString('formType', 50);
+        && okString('formType', 50)
+        && okString('rejectReason', 1000)
+        && okString('rejectedBy', 100)
+        && okString('rejectedByRole', 50)
+        && noScriptInject('rejectReason')
+        && noScriptInject('rejectedBy');
       allow delete: if false;
     }
 
@@ -121,9 +126,17 @@ service cloud.firestore {
 
     // ============================================================================
     // users — ตารางผู้ใช้ (อ่านได้, เขียนได้ผ่าน auth)
+    // approvalLevel: int 3-9 (ระดับอนุมัติ HR; ≥ 6 ถึงจะอนุมัติใบขอใช้รถได้)
     // ============================================================================
     match /artifacts/{appId}/public/data/users/{document=**} {
-      allow read, create, update: if isAuthed();
+      allow read, create, update: if isAuthed()
+        && (!('approvalLevel' in request.resource.data)
+            || (request.resource.data.approvalLevel is int
+                && request.resource.data.approvalLevel >= 0
+                && request.resource.data.approvalLevel <= 9))
+        && (!('approvalLevelSetBy' in request.resource.data)
+            || (request.resource.data.approvalLevelSetBy is string
+                && request.resource.data.approvalLevelSetBy.size() <= 20));
       allow delete: if isAuthed();
     }
 

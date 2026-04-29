@@ -127,6 +127,46 @@ export async function authenticateUser(staffId, password) {
   };
 }
 
+/**
+ * 🔑 เปลี่ยนรหัสผ่านตัวเอง — ต้องระบุรหัสเก่าด้วย
+ */
+export async function changeMyPassword(staffId, oldPassword, newPassword) {
+  if (!firebaseReady || !db) throw new Error('ระบบยังไม่พร้อม');
+  if (!staffId) throw new Error('ไม่พบรหัสพนักงาน');
+  if (!newPassword || newPassword.length < 4) throw new Error('รหัสผ่านใหม่ต้องอย่างน้อย 4 ตัวอักษร');
+  if (newPassword === oldPassword) throw new Error('รหัสผ่านใหม่ต้องต่างจากรหัสเก่า');
+
+  const normalizedId = staffId.toUpperCase().trim();
+  const userDocRef = doc(getUsersCollRef(), normalizedId);
+  const userSnap = await getDoc(userDocRef);
+  if (!userSnap.exists()) throw new Error('ไม่พบผู้ใช้');
+
+  const u = userSnap.data();
+
+  // ตรวจรหัสเก่าก่อน
+  const oldHash = await hashPassword(oldPassword);
+  if (oldHash !== u.passwordHash) {
+    throw new Error('รหัสผ่านเก่าไม่ถูกต้อง');
+  }
+
+  // อัปเดตเป็นรหัสใหม่
+  const newHash = await hashPassword(newPassword);
+  const { updateDoc } = await import('firebase/firestore');
+  await updateDoc(userDocRef, {
+    passwordHash: newHash,
+    passwordChangedAt: new Date().toISOString(),
+    passwordChangedBy: 'self',
+  });
+  return { success: true };
+}
+
+/**
+ * 🔑 ตั้งรหัสผ่านครั้งแรก (สำหรับ user ที่ยังไม่ได้ตั้ง — ใช้รหัส default)
+ */
+export async function setFirstPassword(staffId, defaultPassword, newPassword) {
+  return changeMyPassword(staffId, defaultPassword, newPassword);
+}
+
 export async function getUserById(staffId) {
   if (!firebaseReady || !db) return null;
 

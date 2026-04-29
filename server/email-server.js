@@ -460,13 +460,23 @@ app.post('/api/send-approval-email', ...sendEmailEndpoint(async (req, res) => {
           </table>
         </div>
 
-        <div style="text-align: center; margin: 32px 0;">
-          <a href="${approveUrl}" style="display: inline-block; background: #16a34a; color: white; padding: 16px 48px; border-radius: 12px; text-decoration: none; font-weight: 900; font-size: 16px; letter-spacing: 1px;">
-            ✓ กดเพื่อเซ็นอนุมัติ
-          </a>
-        </div>
+        <!-- Big CTA Button — table-based for max email client compat -->
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0" align="center" style="margin: 32px auto;">
+          <tr>
+            <td align="center" bgcolor="#16a34a" style="background-color:#16a34a;border-radius:12px;border:2px solid #15803d">
+              <a href="${approveUrl}" target="_blank" style="display:inline-block;padding:18px 56px;color:#ffffff !important;text-decoration:none;font-weight:bold;font-size:18px;font-family:Arial,Tahoma,sans-serif;background-color:#16a34a;border-radius:12px;line-height:1.2;mso-line-height-rule:exactly;letter-spacing:0.5px">
+                <font color="#ffffff"><span style="color:#ffffff">✅ กดเพื่อเซ็นอนุมัติ</span></font>
+              </a>
+            </td>
+          </tr>
+          <tr>
+            <td align="center" style="padding-top:6px">
+              <span style="font-size:13px;color:#64748b;font-family:Arial,sans-serif">Click to Approve Document</span>
+            </td>
+          </tr>
+        </table>
 
-        <p style="font-size: 11px; color: #94a3b8; text-align: center;">กดปุ่มด้านบนเพื่อเปิดเอกสารและลงลายเซ็นอนุมัติ</p>
+        <p style="font-size: 11px; color: #94a3b8; text-align: center;">กดปุ่มสีเขียวด้านบนเพื่อเปิดเอกสารและลงลายเซ็นอนุมัติ</p>
       </div>
       <p style="text-align: center; font-size: 10px; color: #94a3b8; margin-top: 16px;">SOC Systems | TBKK</p>
     </div>

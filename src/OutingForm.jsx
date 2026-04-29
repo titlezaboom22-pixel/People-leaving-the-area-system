@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Printer, FileText, Eraser, CheckCircle2, Upload, PenTool, Send } from 'lucide-react';
 import { createApprovalWorkflowRequest } from './approvalNotifications';
+import { wakeupEmailServer } from './notifyEmail';
 import { getHeadEmail, copyHtmlAndOpenOutlook, buildApproveUrl } from './emailHelper';
 import { printOutingRequest } from './printDocument';
 import ApproverPicker from './ApproverPicker';

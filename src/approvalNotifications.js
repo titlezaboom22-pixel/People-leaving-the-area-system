@@ -25,6 +25,7 @@ import {
   notifyRequestCreated,
   notifyStepApproved,
   notifyWorkflowCompleted,
+  notifyWorkflowRejected,
 } from './notifyEmail';
 
 // Re-export for backward compatibility
@@ -144,6 +145,13 @@ function buildNextStep(prev, nextStep) {
 
 // --- Public API ---
 
+// ล้าง cache local ทั้งหมด (ใช้เผื่อต้องการ reset)
+export function clearAllLocalCache() {
+  try { localStorage.removeItem(STORAGE_KEY); } catch {}
+  try { sessionStorage.removeItem(SESSION_KEY); } catch {}
+  try { window[MEMORY_KEY] = []; } catch {}
+}
+
 export async function createApprovalWorkflowRequest({
   topic,
   requesterId = '-',
@@ -233,13 +241,14 @@ export async function getPendingNotificationsByDepartment(department) {
 
   if (firebaseReady && db) {
     try {
-      const q = query(
-        getCollRef(),
-        where('status', '==', 'pending'),
-      );
+      const q = query(getCollRef(), where('status', '==', 'pending'));
       const snap = await getDocs(q);
-      return snap.docs
-        .map((d) => ({ ...d.data(), _docId: d.id }))
+      const fresh = snap.docs.map((d) => ({ ...d.data(), _docId: d.id }));
+      // Sync localStorage: เอาของจริงจาก Firestore + ของเก่าที่ไม่ได้อยู่ใน Firestore (ตัด orphans)
+      const allFromDb = await getDocs(getCollRef());
+      const allItems = allFromDb.docs.map((d) => ({ ...d.data(), _docId: d.id }));
+      writeAllLocal(allItems);
+      return fresh
         .filter((x) => normalizeDepartment(x.department) === target)
         .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
     } catch (err) {
@@ -260,14 +269,17 @@ export async function getWorkflowSummariesForRequester(requesterId) {
 
   if (firebaseReady && db) {
     try {
-      const q = query(
-        getCollRef(),
-        where('requesterId', '==', target),
-      );
+      const q = query(getCollRef(), where('requesterId', '==', target));
       const snap = await getDocs(q);
       items = snap.docs
         .map((d) => ({ ...d.data(), _docId: d.id }))
         .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
+      // Sync localStorage: ลบของเก่าที่ไม่อยู่ใน Firestore แล้ว
+      try {
+        const allFromDb = await getDocs(getCollRef());
+        const allItems = allFromDb.docs.map((d) => ({ ...d.data(), _docId: d.id }));
+        writeAllLocal(allItems);
+      } catch {}
     } catch (err) {
       console.warn('Firestore read failed, using localStorage fallback:', err);
       items = null;
@@ -294,6 +306,7 @@ export async function getWorkflowSummariesForRequester(requesterId) {
       const approvedStepNums = new Set(allSorted.filter((s) => s.status === 'approved').map((s) => s.step));
       const sorted = allSorted.filter((s) => !(s.status === 'pending' && approvedStepNums.has(s.step)));
       const returned = sorted.find((s) => s.status === 'returned');
+      const rejected = sorted.find((s) => s.status === 'rejected');
       const pending = sorted.find((s) => s.status === 'pending');
       const last = sorted[sorted.length - 1];
       const lastStep = last?.step || 1;
@@ -304,7 +317,9 @@ export async function getWorkflowSummariesForRequester(requesterId) {
       let label = 'กำลังดำเนินการ';
       const isGaDirect = last?.targetType === 'GA' || pending?.targetType === 'GA';
       const isVehicleBooking = sourceForm === 'VEHICLE_BOOKING';
-      if (returned) {
+      if (rejected) {
+        label = `❌ ถูกปฏิเสธ${rejected.rejectedByRole ? ' (' + rejected.rejectedByRole + ')' : ''}`;
+      } else if (returned) {
         label = '⚠️ ถูกส่งกลับให้แก้ไข';
       } else if (pending) {
         if (isVehicleBooking && pending.targetType === 'GA') {
@@ -345,13 +360,135 @@ export async function getWorkflowSummariesForRequester(requesterId) {
         steps: sorted,
         pending,
         returned,
+        rejected,
         returnNote: returned?.returnNote || null,
+        rejectReason: rejected?.rejectReason || null,
+        rejectedBy: rejected?.rejectedBy || null,
+        rejectedByRole: rejected?.rejectedByRole || null,
+        rejectedAt: rejected?.rejectedAt || null,
         statusLabel: label,
-        isDone: !pending && !returned && lastStep >= maxSteps && last?.status === 'approved',
+        isDone: !pending && !returned && !rejected && lastStep >= maxSteps && last?.status === 'approved',
         isReturned: !!returned,
+        isRejected: !!rejected,
       };
     })
     .sort((a, b) => String(b.steps[0]?.createdAt).localeCompare(String(a.steps[0]?.createdAt)));
+}
+
+/**
+ * Reject เอกสารและจบ workflow (terminal state)
+ *
+ * - Mark workflow ปัจจุบันเป็น 'rejected' พร้อมเหตุผล
+ * - ไม่สร้าง step ถัดไป (จบ chain)
+ * - ส่งเมลแจ้งผู้ขอพร้อมเหตุผล (ผ่าน notifyEmail)
+ * - ผู้ขอสามารถ "แก้ไขส่งใหม่" ได้ — จะสร้าง workflow ใหม่ link ไปยัง chainId เก่า
+ */
+export async function rejectNotification(notificationId, { rejectedBy = '-', rejectedByRole = '', rejectReason = '' } = {}) {
+  const rejectedAt = new Date().toISOString();
+  const reason = String(rejectReason || '').trim();
+
+  if (!reason) {
+    throw new Error('กรุณาระบุเหตุผลในการปฏิเสธ');
+  }
+
+  if (firebaseReady && db) {
+    try {
+      const q = query(getCollRef(), where('id', '==', notificationId));
+      const snap = await getDocs(q);
+      if (!snap.empty) {
+        const docSnap = snap.docs[0];
+        const n = docSnap.data();
+
+        const updates = {
+          status: 'rejected',
+          rejectedAt,
+          rejectedBy,
+          rejectedByRole,
+          rejectReason: reason,
+        };
+
+        await updateDoc(doc(db, docSnap.ref.path), updates);
+
+        // Update local cache
+        const all = readAllLocal();
+        const idx = all.findIndex((x) => x.id === notificationId);
+        if (idx !== -1) {
+          all[idx] = { ...all[idx], ...updates };
+          writeAllLocal(all);
+        }
+
+        // Fire-and-forget email — แจ้งผู้ขอว่าถูกปฏิเสธ
+        try {
+          const rejectedItem = { ...n, ...updates };
+          notifyWorkflowRejected(rejectedItem);
+        } catch {}
+
+        return;
+      }
+    } catch (err) {
+      console.warn('Firestore reject failed, using localStorage fallback:', err);
+    }
+  }
+
+  // localStorage fallback
+  const all = readAllLocal();
+  const idx = all.findIndex((n) => n.id === notificationId);
+  if (idx === -1) return;
+
+  all[idx] = {
+    ...all[idx],
+    status: 'rejected',
+    rejectedAt,
+    rejectedBy,
+    rejectedByRole,
+    rejectReason: reason,
+  };
+  writeAllLocal(all);
+
+  try {
+    notifyWorkflowRejected(all[idx]);
+  } catch {}
+}
+
+/**
+ * ดึง email ของ GA ทุกคนใน users collection (cache 5 นาที)
+ * คืนค่า: { to: <first email>, cc: [<rest emails>] } เพื่อใช้ใน Nodemailer
+ */
+let _gaCache = { ts: 0, recipients: null };
+const GA_CACHE_MS = 5 * 60 * 1000;
+
+export async function getGaRecipients({ forceRefresh = false } = {}) {
+  const now = Date.now();
+  if (!forceRefresh && _gaCache.recipients && (now - _gaCache.ts) < GA_CACHE_MS) {
+    return _gaCache.recipients;
+  }
+
+  if (!firebaseReady || !db) {
+    return { to: '', cc: [], all: [] };
+  }
+
+  try {
+    const usersRef = collection(db, 'artifacts', appId, 'public', 'data', 'users');
+    const q = query(usersRef, where('roleType', '==', 'GA'));
+    const snap = await getDocs(q);
+    const emails = snap.docs
+      .map((d) => d.data())
+      .filter((u) => u.active !== false && u.email)
+      .map((u) => u.email.trim())
+      .filter(Boolean);
+
+    const recipients = {
+      to: emails[0] || '',
+      cc: emails.slice(1),
+      all: emails,
+    };
+
+    _gaCache = { ts: now, recipients };
+    return recipients;
+  } catch (err) {
+    console.warn('getGaRecipients failed:', err);
+    return { to: '', cc: [], all: [] };
+  }
 }
 
 export async function approveNotification(notificationId, { approvedBy = '-', approvedSign = null } = {}) {

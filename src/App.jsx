@@ -83,6 +83,7 @@ import {
 } from 'firebase/auth';
 import { app, auth, db, firebaseReady, appId } from './firebase';
 import { DEPARTMENTS, STATUS } from './constants';
+import { COMPANIES, DIVISIONS, DEPARTMENT_LIST, SECTIONS, POSITIONS, getCompanyByStaffId } from './orgStructure';
 import SecurityGate from './SecurityGate';
 import GAView from './GAView';
 import DriverView from './DriverView';
@@ -95,10 +96,11 @@ import {
   getWorkflowSummariesForRequester,
   approveNotification,
 } from './approvalNotifications';
-import { authenticateUser } from './authService';
+import { authenticateUser, changeMyPassword } from './authService';
 import { logAction, ACTIONS } from './auditLog';
 import { sendInviteEmail } from './emailService';
 import { notifyWorkflowReturned } from './notifyEmail';
+import { printVehicleBooking } from './printDocument';
 import ApprovePage from './ApprovePage';
 import SecurityAlertsPanel from './SecurityAlertsPanel';
 import { checkPublicFormRate } from './emailHelper';
@@ -212,8 +214,36 @@ export default function App() {
   const [user, setUser] = useState(null);
   const [role, setRole] = useState(saved?.role || null);
   const [hostIdentity, setHostIdentity] = useState(saved?.identity || null);
+  const [showChangePassword, setShowChangePassword] = useState(false);
   const [appointments, setAppointments] = useState([]);
   const [loading, setLoading] = useState(true);
+  // ฟอร์มเปิด/ปิด (admin จัดการได้)
+  const [formStatus, setFormStatus] = useState({
+    vehicle: true, drink: true, outing: false, equipment: false, goods: false,
+  });
+
+  // Subscribe form status from Firestore
+  useEffect(() => {
+    if (!firebaseReady || !user) return;
+    const ref = doc(db, 'artifacts', appId, 'public', 'data', 'system', 'formStatus');
+    const unsub = onSnapshot(ref, (snap) => {
+      if (snap.exists()) {
+        setFormStatus(prev => ({ ...prev, ...snap.data() }));
+      }
+    });
+    return () => unsub();
+  }, [user]);
+
+  const toggleFormStatus = async (key) => {
+    if (!firebaseReady) return;
+    const next = { ...formStatus, [key]: !formStatus[key] };
+    setFormStatus(next);
+    try {
+      await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'system', 'formStatus'), next, { merge: true });
+    } catch (err) {
+      console.error('toggle form status:', err);
+    }
+  };
 
   // การยืนยันตัวตน (ตามกฎ Rule 3) with timeout
   useEffect(() => {
@@ -389,18 +419,37 @@ export default function App() {
                 <EmployeeAvatar staffId={'ADMIN'} size={34} canEdit />
               )}
               <div className="text-right">
-              <p className="text-[10px] text-slate-400 uppercase font-black tracking-widest">สถานะระบบ</p>
-              <p className="text-sm font-bold text-blue-600">
-                {role === 'HOST'
-                  ? `หัวหน้าแผนก: #${hostIdentity.staffId}`
-                  : role === 'EMPLOYEE'
-                  ? `พนักงาน: #${hostIdentity.staffId}`
-                  : role === 'ADMIN'
-                  ? 'ผู้ดูแลระบบ'
-                  : 'หน้าลงทะเบียนแขก'}
+              <p className="text-[10px] text-slate-400 uppercase font-black tracking-widest">
+                {role === 'HOST' ? 'หัวหน้าแผนก' : role === 'EMPLOYEE' ? 'พนักงาน' : role === 'ADMIN' ? 'ผู้ดูแลระบบ' : 'หน้าลงทะเบียนแขก'}
               </p>
+              {(role === 'HOST' || role === 'EMPLOYEE') ? (
+                <>
+                  <p className="text-sm font-bold text-slate-900 leading-tight">
+                    {hostIdentity?.name || hostIdentity?.displayName || `#${hostIdentity?.staffId}`}
+                  </p>
+                  <div className="flex items-center justify-end gap-1.5 mt-0.5">
+                    <span className="text-[10px] text-slate-400 font-mono">#{hostIdentity?.staffId}</span>
+                    {hostIdentity?.department && (
+                      <span className="text-[9px] font-black uppercase tracking-wider text-blue-700 bg-blue-50 border border-blue-100 px-1.5 py-0.5 rounded">
+                        🏢 {hostIdentity.department}
+                      </span>
+                    )}
+                  </div>
+                </>
+              ) : (
+                <p className="text-sm font-bold text-blue-600">
+                  {role === 'ADMIN' ? 'ADMIN' : 'GUEST'}
+                </p>
+              )}
             </div>
             </div>
+            <button
+              onClick={() => setShowChangePassword(true)}
+              className="p-2.5 hover:bg-blue-50 rounded-xl transition-all text-slate-400 hover:text-blue-600 border border-slate-100 hover:border-blue-100 font-sans"
+              title="เปลี่ยนรหัสผ่าน"
+            >
+              🔑
+            </button>
             <button onClick={handleLogout} className="p-2.5 hover:bg-red-50 rounded-xl transition-all text-slate-400 hover:text-red-600 border border-slate-100 hover:border-red-100 font-sans">
               <LogOut size={20} />
             </button>
@@ -409,10 +458,10 @@ export default function App() {
       </nav>
 
       <main className="max-w-7xl mx-auto p-4 md:p-8 animate-in fade-in duration-700">
-        {role === 'HOST' && <HostView appointments={appointments} user={user} hostIdentity={hostIdentity} role="HOST" />}
-        {role === 'EMPLOYEE' && <HostView appointments={appointments} user={user} hostIdentity={hostIdentity} role="EMPLOYEE" />}
+        {role === 'HOST' && <HostView appointments={appointments} user={user} hostIdentity={hostIdentity} role="HOST" formStatus={formStatus} />}
+        {role === 'EMPLOYEE' && <HostView appointments={appointments} user={user} hostIdentity={hostIdentity} role="EMPLOYEE" formStatus={formStatus} />}
         {role === 'GUEST' && <GuestView user={user} />}
-        {role === 'ADMIN' && <AdminView appointments={appointments} user={user} />}
+        {role === 'ADMIN' && <AdminView appointments={appointments} user={user} formStatus={formStatus} toggleFormStatus={toggleFormStatus} />}
       </main>
       <RobotNotifier role={role} hostIdentity={hostIdentity} />
       <VehicleTimeAlert userRole={role} requesterId={hostIdentity?.staffId} />
@@ -427,6 +476,7 @@ function LoginScreen({ onLoginSuccess }) {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [isLoading, setIsLoading] = useState(false);
+  const [showSetPassword, setShowSetPassword] = useState(false);
 
   const handleLogin = async (e) => {
     e.preventDefault();
@@ -508,6 +558,15 @@ function LoginScreen({ onLoginSuccess }) {
             <button type="submit" disabled={isLoading} className="w-full bg-gradient-to-r from-blue-600 to-indigo-700 text-white py-5 rounded-[1.5rem] font-black text-lg hover:shadow-xl hover:shadow-blue-200 transition-all active:scale-95 flex items-center justify-center gap-3 mt-4 font-sans disabled:opacity-50">
               <Lock size={18} /> {isLoading ? 'กำลังเข้าสู่ระบบ...' : 'เข้าใช้งานระบบ'}
             </button>
+
+            {/* 🔑 ตั้งรหัสผ่านเอง */}
+            <button
+              type="button"
+              onClick={() => setShowSetPassword(true)}
+              className="w-full text-center text-xs font-bold text-blue-600 hover:text-blue-800 hover:underline mt-3 py-2"
+            >
+              🔑 ตั้งรหัสผ่านเอง / ลืมรหัสผ่าน?
+            </button>
           </form>
 
           <div className="mt-8 pt-8 border-t border-slate-100 text-center relative z-10 font-sans">
@@ -525,12 +584,263 @@ function LoginScreen({ onLoginSuccess }) {
           </div>
         </div>
       </div>
+
+      {/* 🔑 Modal ตั้งรหัสผ่านเอง / ลืมรหัสผ่าน */}
+      {showSetPassword && (
+        <SetPasswordModal
+          initialStaffId={staffId}
+          onClose={() => setShowSetPassword(false)}
+          onSuccess={(newId) => {
+            setShowSetPassword(false);
+            setStaffId(newId);
+            setPassword('');
+            setError('');
+          }}
+        />
+      )}
+    </div>
+  );
+}
+
+// 🔑 ตั้งรหัสผ่านเอง — Modal สำหรับครั้งแรก / ลืมรหัส
+function SetPasswordModal({ initialStaffId = '', onClose, onSuccess }) {
+  const [step, setStep] = useState(1); // 1=verify, 2=set, 3=done
+  const [staffId, setStaffId] = useState(initialStaffId);
+  const [email, setEmail] = useState('');
+  const [user, setUser] = useState(null);
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [showPass, setShowPass] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+
+  // Step 1: ยืนยันตัวตน — ใส่ ID + Email
+  const handleVerify = async (e) => {
+    e?.preventDefault();
+    setError('');
+    if (!staffId.trim()) { setError('กรุณาระบุรหัสพนักงาน'); return; }
+    if (!email.trim()) { setError('กรุณาระบุ email'); return; }
+    setSubmitting(true);
+    try {
+      const { getDoc, doc: fsDoc } = await import('firebase/firestore');
+      const id = staffId.trim().toUpperCase();
+      const userRef = fsDoc(db, 'artifacts', appId, 'public', 'data', 'users', id);
+      const snap = await getDoc(userRef);
+      if (!snap.exists()) { setError('ไม่พบรหัสพนักงานนี้ในระบบ'); setSubmitting(false); return; }
+      const u = snap.data();
+      if (u.active === false) { setError('บัญชีนี้ถูกปิดใช้งาน'); setSubmitting(false); return; }
+      if (!u.email) { setError('บัญชีนี้ไม่มี email ในระบบ — ติดต่อ admin'); setSubmitting(false); return; }
+      if (u.email.toLowerCase().trim() !== email.toLowerCase().trim()) {
+        setError('Email ไม่ตรงกับที่ลงทะเบียนไว้');
+        setSubmitting(false);
+        return;
+      }
+      // ผ่าน → step 2
+      setUser({ id, ...u });
+      setStep(2);
+    } catch (err) {
+      setError(err?.message || 'ตรวจสอบไม่สำเร็จ');
+    }
+    setSubmitting(false);
+  };
+
+  // Step 2: ตั้งรหัสใหม่
+  const handleSetPassword = async (e) => {
+    e?.preventDefault();
+    setError('');
+    if (!newPassword) { setError('กรุณาใส่รหัสผ่าน'); return; }
+    if (newPassword.length < 4) { setError('รหัสผ่านต้องอย่างน้อย 4 ตัวอักษร'); return; }
+    if (newPassword !== confirmPassword) { setError('รหัสผ่านไม่ตรงกัน'); return; }
+    setSubmitting(true);
+    try {
+      const { updateDoc, doc: fsDoc } = await import('firebase/firestore');
+      const userRef = fsDoc(db, 'artifacts', appId, 'public', 'data', 'users', user.id);
+      // hashPassword
+      const encoder = new TextEncoder();
+      const data = encoder.encode(newPassword);
+      const hashBuffer = await crypto.subtle.digest('SHA-256', data);
+      const hashArray = Array.from(new Uint8Array(hashBuffer));
+      const hash = hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+      await updateDoc(userRef, {
+        passwordHash: hash,
+        passwordChangedAt: new Date().toISOString(),
+        passwordChangedBy: 'self-set',
+      });
+      setStep(3);
+      setTimeout(() => { onSuccess(user.id); }, 2000);
+    } catch (err) {
+      setError(err?.message || 'ตั้งรหัสผ่านไม่สำเร็จ');
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[200] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => !submitting && onClose()}>
+      <div className="w-full max-w-md bg-white rounded-3xl shadow-2xl overflow-hidden" onClick={(e) => e.stopPropagation()}>
+        <div className="bg-gradient-to-br from-blue-600 to-indigo-600 text-white px-6 py-5 flex items-center justify-between">
+          <div>
+            <h3 className="text-lg font-black">🔑 ตั้งรหัสผ่านเอง</h3>
+            <p className="text-xs text-blue-100 mt-1">
+              {step === 1 && 'ยืนยันตัวตนก่อน — ระบุ ID + Email'}
+              {step === 2 && 'ตั้งรหัสผ่านใหม่ — อย่างน้อย 4 ตัว'}
+              {step === 3 && '✅ ตั้งรหัสสำเร็จ!'}
+            </p>
+          </div>
+          <button onClick={onClose} disabled={submitting} className="w-9 h-9 flex items-center justify-center rounded-xl bg-white/20 hover:bg-white/30 transition disabled:opacity-50">
+            <X size={20} />
+          </button>
+        </div>
+
+        {/* Step indicator */}
+        <div className="px-6 pt-4">
+          <div className="flex items-center gap-2">
+            {[1, 2, 3].map((s) => (
+              <React.Fragment key={s}>
+                <div className={`flex-1 h-1 rounded-full ${step >= s ? 'bg-blue-600' : 'bg-slate-200'}`} />
+              </React.Fragment>
+            ))}
+          </div>
+          <div className="flex justify-between text-[10px] text-slate-400 mt-1">
+            <span className={step >= 1 ? 'font-bold text-blue-600' : ''}>1. ยืนยัน</span>
+            <span className={step >= 2 ? 'font-bold text-blue-600' : ''}>2. ตั้งรหัส</span>
+            <span className={step >= 3 ? 'font-bold text-emerald-600' : ''}>3. เสร็จ</span>
+          </div>
+        </div>
+
+        {/* Step 1: ยืนยันตัวตน */}
+        {step === 1 && (
+          <form onSubmit={handleVerify} className="p-6 space-y-4">
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1.5">🆔 รหัสพนักงาน</label>
+              <input
+                type="text"
+                value={staffId}
+                onChange={(e) => setStaffId(e.target.value.toUpperCase())}
+                disabled={submitting}
+                placeholder="เช่น SD553"
+                autoFocus
+                className="w-full px-3 py-2.5 text-sm border-2 border-slate-200 rounded-xl focus:outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-50 font-mono uppercase"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1.5">📧 Email ที่ลงทะเบียนไว้</label>
+              <input
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                disabled={submitting}
+                placeholder="example@tbkk.co.th"
+                className="w-full px-3 py-2.5 text-sm border-2 border-slate-200 rounded-xl focus:outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-50"
+              />
+              <p className="text-[10px] text-slate-400 mt-1">💡 ใช้ email ของบริษัท TBKK ที่ HR ลงทะเบียนไว้</p>
+            </div>
+
+            {error && (
+              <div className="bg-red-50 border-2 border-red-200 rounded-xl p-3">
+                <p className="text-sm font-bold text-red-700">❌ {error}</p>
+              </div>
+            )}
+
+            <div className="flex gap-2 pt-2">
+              <button type="button" onClick={onClose} disabled={submitting} className="flex-1 px-4 py-2.5 rounded-xl border-2 border-slate-200 text-slate-600 hover:bg-slate-50 text-sm font-bold disabled:opacity-50">
+                ยกเลิก
+              </button>
+              <button type="submit" disabled={submitting || !staffId || !email} className="flex-[2] px-6 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 text-white text-sm font-black shadow-md hover:from-blue-700 hover:to-indigo-700 disabled:from-slate-300 disabled:to-slate-300 disabled:cursor-not-allowed">
+                {submitting ? '⏳ กำลังตรวจ...' : 'ตรวจสอบ →'}
+              </button>
+            </div>
+          </form>
+        )}
+
+        {/* Step 2: ตั้งรหัสใหม่ */}
+        {step === 2 && user && (
+          <form onSubmit={handleSetPassword} className="p-6 space-y-4">
+            <div className="bg-emerald-50 border-2 border-emerald-200 rounded-xl p-3 text-center">
+              <p className="text-[11px] font-bold text-emerald-700 uppercase tracking-wider">✓ ยืนยันตัวตนสำเร็จ</p>
+              <p className="text-base font-black text-slate-900 mt-1">👤 {user.name || user.displayName}</p>
+              <p className="text-[11px] text-slate-500">#{user.id} · {user.email}</p>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1.5">✨ รหัสผ่านใหม่</label>
+              <div className="relative">
+                <input
+                  type={showPass ? 'text' : 'password'}
+                  value={newPassword}
+                  onChange={(e) => setNewPassword(e.target.value)}
+                  disabled={submitting}
+                  placeholder="อย่างน้อย 4 ตัวอักษร"
+                  autoFocus
+                  className="w-full px-3 py-2.5 pr-10 text-sm border-2 border-slate-200 rounded-xl focus:outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 disabled:bg-slate-50"
+                />
+                <button type="button" onClick={() => setShowPass(!showPass)} className="absolute right-2 top-1/2 -translate-y-1/2 px-2 py-1 text-xs">
+                  {showPass ? '🙈' : '👁'}
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-slate-700 mb-1.5">✓ ยืนยันรหัสผ่าน</label>
+              <input
+                type={showPass ? 'text' : 'password'}
+                value={confirmPassword}
+                onChange={(e) => setConfirmPassword(e.target.value)}
+                disabled={submitting}
+                placeholder="กรอกอีกครั้ง"
+                className={`w-full px-3 py-2.5 text-sm border-2 rounded-xl focus:outline-none focus:ring-2 disabled:bg-slate-50 ${
+                  confirmPassword && confirmPassword !== newPassword ? 'border-red-300 focus:border-red-400 focus:ring-red-100'
+                  : confirmPassword && confirmPassword === newPassword ? 'border-emerald-300 focus:border-emerald-400 focus:ring-emerald-100'
+                  : 'border-slate-200 focus:border-blue-400 focus:ring-blue-100'
+                }`}
+              />
+              {confirmPassword && confirmPassword !== newPassword && <p className="text-[11px] text-red-600 mt-1">⚠️ ไม่ตรงกัน</p>}
+              {confirmPassword && confirmPassword === newPassword && newPassword.length >= 4 && <p className="text-[11px] text-emerald-600 mt-1">✓ ตรงกัน</p>}
+            </div>
+
+            {error && (
+              <div className="bg-red-50 border-2 border-red-200 rounded-xl p-3">
+                <p className="text-sm font-bold text-red-700">❌ {error}</p>
+              </div>
+            )}
+
+            <div className="bg-blue-50 border border-blue-200 rounded-xl p-3">
+              <p className="text-[11px] font-bold text-blue-800 mb-1">💡 คำแนะนำ:</p>
+              <ul className="text-[11px] text-blue-700 space-y-0.5 list-disc list-inside">
+                <li>อย่างน้อย 4 ตัวอักษร (แนะนำ 6+)</li>
+                <li>อย่าใช้ "1234", "0000"</li>
+                <li>จดจำให้ดี — ลืมแล้วต้องตั้งใหม่</li>
+              </ul>
+            </div>
+
+            <div className="flex gap-2 pt-2">
+              <button type="button" onClick={() => setStep(1)} disabled={submitting} className="flex-1 px-4 py-2.5 rounded-xl border-2 border-slate-200 text-slate-600 hover:bg-slate-50 text-sm font-bold disabled:opacity-50">
+                ← ย้อนกลับ
+              </button>
+              <button type="submit" disabled={submitting || !newPassword || newPassword !== confirmPassword || newPassword.length < 4} className="flex-[2] px-6 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-green-600 text-white text-sm font-black shadow-md hover:from-emerald-700 hover:to-green-700 disabled:from-slate-300 disabled:to-slate-300 disabled:cursor-not-allowed">
+                {submitting ? '⏳ กำลังบันทึก...' : '🔑 ตั้งรหัสผ่าน'}
+              </button>
+            </div>
+          </form>
+        )}
+
+        {/* Step 3: สำเร็จ */}
+        {step === 3 && (
+          <div className="p-8 text-center">
+            <div className="text-7xl mb-4">✅</div>
+            <h3 className="text-xl font-black text-emerald-700 mb-2">ตั้งรหัสผ่านสำเร็จ!</h3>
+            <p className="text-sm text-slate-500 mb-4">ตอนนี้คุณเข้าสู่ระบบด้วยรหัสใหม่ได้แล้ว</p>
+            <div className="bg-emerald-50 border-2 border-emerald-200 rounded-xl p-3">
+              <p className="text-xs text-emerald-700">กำลังกลับไปหน้า login...</p>
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
 
 // --- Host View (มุมมองหัวหน้าแผนก) ---
-function HostView({ appointments, user, hostIdentity, role = 'HOST' }) {
+function HostView({ appointments, user, hostIdentity, role = 'HOST', formStatus = {} }) {
   const [showForm, setShowForm] = useState(false);
   const [selectedInvite, setSelectedInvite] = useState(null);
   const [inviteEmailData, setInviteEmailData] = useState(null);
@@ -849,10 +1159,13 @@ function HostView({ appointments, user, hostIdentity, role = 'HOST' }) {
     }
     // รายการรวม (เครื่องดื่ม+อาหาร) → อนุมัติทั้งสอง workflow ที่ถูกรวมไว้
     const idsToApprove = signModalItem._mergedIds || [signModalItem.id];
+    // ใช้ชื่อจริง ไม่ใช่ staffId — เพื่อให้แสดงในเอกสารได้สวยงาม
+    const approverName = hostIdentity?.name || hostIdentity?.displayName ||
+      (hostIdentity?.staffId ? `#${hostIdentity.staffId}` : 'หัวหน้าแผนก');
     for (const id of idsToApprove) {
       await approveNotification(id, {
-        approvedBy: hostIdentity?.staffId || '-',
-        approvedSign: signDataUrl,
+        approvedBy: approverName,
+        approvedSign: signDataUrl || mySignature,
       });
     }
     setApprovalNotifications(await getPendingNotificationsByDepartment(hostIdentity.department));
@@ -861,58 +1174,157 @@ function HostView({ appointments, user, hostIdentity, role = 'HOST' }) {
   };
 
   return (
-    <div className="space-y-8 text-left font-sans">
-      <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-white p-8 rounded-[2rem] border border-slate-200 shadow-sm text-left font-sans">
-        <div className="text-left font-sans">
-          <h2 className="text-3xl font-black text-slate-900 uppercase tracking-tight flex items-center gap-3">
-             <LayoutDashboard className="text-blue-600" /> แผงควบคุมแผนก
-          </h2>
-          <div className="flex items-center gap-4 mt-2">
-             <span className="bg-blue-50 text-blue-600 py-1 px-3 rounded-lg border border-blue-100 text-[10px] font-black uppercase tracking-widest">ID: {hostIdentity.staffId}</span>
-             <span className="bg-slate-50 text-slate-600 py-1 px-3 rounded-lg border border-slate-200 text-[10px] font-black uppercase tracking-widest">{hostIdentity.department}</span>
-          </div>
-          {hostIdentity?.roleType === 'HEAD' && (
-            <div className="flex items-center gap-1.5 mt-3">
-              <span className="text-[10px] font-black uppercase tracking-wider text-slate-500 mr-1">สถานะ:</span>
-              {[
-                { key: 'available', dot: '🟢', label: 'อยู่ประจำโต๊ะ', ring: 'ring-emerald-500 bg-emerald-50 text-emerald-700 border-emerald-300' },
-                { key: 'busy', dot: '🟡', label: 'ไม่ว่าง', ring: 'ring-amber-500 bg-amber-50 text-amber-700 border-amber-300' },
-                { key: 'away', dot: '🔴', label: 'ไม่อยู่', ring: 'ring-red-500 bg-red-50 text-red-700 border-red-300' },
-              ].map((s) => (
-                <button
-                  key={s.key}
-                  disabled={savingStatus}
-                  onClick={async () => {
-                    if (!firebaseReady || !db || !hostIdentity?.staffId) return;
-                    setSavingStatus(true);
-                    try {
-                      const { updateDoc, doc: fsDoc } = await import('firebase/firestore');
-                      await updateDoc(fsDoc(db, 'artifacts', appId, 'public', 'data', 'users', hostIdentity.staffId), { status: s.key });
-                      setMyStatus(s.key);
-                    } catch (e) { console.warn('update status failed:', e); }
-                    finally { setSavingStatus(false); }
-                  }}
-                  className={`text-[11px] font-bold px-2.5 py-1 rounded-lg border transition ${myStatus === s.key ? `ring-2 ${s.ring}` : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'}`}
-                >
-                  {s.dot} {s.label}
-                </button>
-              ))}
+    <div className="flex flex-col lg:flex-row gap-6 text-left font-sans">
+
+    {/* Quick Forms Sidebar (Desktop) — left side */}
+    <aside className="hidden lg:block w-80 flex-shrink-0 order-1">
+      <div className="sticky top-6 bg-white border border-slate-200 rounded-[2rem] p-5 shadow-sm space-y-2">
+        <p className="text-xs font-black text-slate-500 uppercase tracking-widest px-2 py-3 border-b border-slate-100 flex items-center gap-2">
+          <Settings size={16} className="text-slate-400" /> ฟอร์มต่างๆ
+        </p>
+        {[
+          { key: 'vehicle',   url: 'vehicle.html',   label: 'แบบฟอร์มใบขออนุญาตใช้รถของบริษัท',   icon: Car,          btn: 'hover:border-blue-300 hover:ring-blue-200',     iconBox: 'bg-blue-50',   iconText: 'text-blue-600' },
+          { key: 'drink',     url: 'drink.html',     label: 'แบบฟอร์มขออาหารและเครื่องดื่มบริษัท', icon: Coffee,       btn: 'hover:border-orange-300 hover:ring-orange-200', iconBox: 'bg-orange-50', iconText: 'text-orange-600' },
+          { key: 'outing',    url: 'outing.html',    label: 'ขอออกข้างนอก',                       icon: ExternalLink, btn: 'hover:border-red-300 hover:ring-red-200',       iconBox: 'bg-red-50',    iconText: 'text-red-600' },
+          { key: 'equipment', url: 'equipment.html', label: 'เบิกอุปกรณ์ในสำนักงาน',                icon: Package,      btn: 'hover:border-purple-300 hover:ring-purple-200', iconBox: 'bg-purple-50', iconText: 'text-purple-600' },
+          { key: 'goods',     url: 'goods.html',     label: 'นำของเข้า / ของออก',                  icon: Truck,        btn: 'hover:border-amber-300 hover:ring-amber-200',   iconBox: 'bg-amber-50',  iconText: 'text-amber-600' },
+        ].map((f, i) => {
+          const Icon = f.icon;
+          const enabled = formStatus[f.key] !== false;
+          return (
+            <button
+              key={i}
+              onClick={() => {
+                if (!enabled) {
+                  alert('ฟอร์มนี้ยังไม่เปิดให้ใช้งาน\nThis form is not yet enabled');
+                  return;
+                }
+                window.open(`/${f.url}?name=${encodeURIComponent(hostIdentity?.name || '')}&staffId=${encodeURIComponent(hostIdentity?.staffId || '')}&dept=${encodeURIComponent(hostIdentity?.department || '')}`, '_blank');
+              }}
+              disabled={!enabled}
+              className={
+                enabled
+                  ? `w-full flex items-center gap-4 px-4 py-4 rounded-2xl text-sm font-bold text-slate-700 bg-white border border-slate-100 hover:bg-slate-50 hover:shadow-md hover:ring-2 transition-all active:scale-[0.98] group ${f.btn}`
+                  : 'w-full flex items-center gap-4 px-4 py-4 rounded-2xl text-sm font-bold text-slate-400 bg-slate-50 border border-slate-100 cursor-not-allowed group'
+              }
+            >
+              <span className={`flex-shrink-0 w-12 h-12 rounded-2xl flex items-center justify-center transition-transform ${
+                enabled ? `${f.iconBox} group-hover:scale-110` : 'bg-slate-100 grayscale'
+              }`}>
+                <Icon className={enabled ? f.iconText : 'text-slate-400'} size={22} />
+              </span>
+              <span className="flex-1 text-left leading-tight">
+                {f.label}
+                {!enabled && (
+                  <span className="block text-[9px] font-bold text-slate-400 mt-0.5 normal-case">
+                    🔒 ปิดอยู่ — รออัปเดต
+                  </span>
+                )}
+              </span>
+              {enabled
+                ? <ExternalLink size={14} className="text-slate-300 flex-shrink-0 group-hover:text-slate-500 transition" />
+                : <span className="text-[10px] font-black text-slate-400 flex-shrink-0">OFF</span>
+              }
+            </button>
+          );
+        })}
+      </div>
+    </aside>
+
+    {/* Main content (right) */}
+    <div className="flex-1 min-w-0 space-y-8 order-2">
+      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden font-sans text-left">
+        {/* Top accent bar */}
+        <div className="h-1 bg-gradient-to-r from-blue-700 via-blue-600 to-indigo-600"></div>
+
+        <div className="p-6 md:p-7 flex flex-col lg:flex-row justify-between items-start lg:items-center gap-5">
+          {/* Left: title + identity */}
+          <div className="text-left font-sans flex items-start gap-4 min-w-0 flex-1">
+            <div className="hidden sm:flex items-center justify-center w-12 h-12 rounded-xl bg-blue-50 border border-blue-100 flex-shrink-0">
+              <LayoutDashboard className="text-blue-700 w-6 h-6" />
             </div>
-          )}
-        </div>
-        <div className="flex gap-3 flex-wrap">
-          <button onClick={() => setShowMyQR(true)} className="bg-slate-700 hover:bg-slate-900 text-white px-5 py-4 rounded-2xl font-black transition flex items-center gap-2 active:scale-95 font-sans">
-            <QrCode size={20} /> QR ของฉัน
-          </button>
-          <button onClick={() => { setShowSignSetup(true); setSignSetupDataUrl(mySignature || ''); }} className={`${mySignature ? 'bg-emerald-700 hover:bg-emerald-900' : 'bg-amber-500 hover:bg-amber-600'} text-white px-5 py-4 rounded-2xl font-black transition flex items-center gap-2 active:scale-95 font-sans`}>
-            <Edit size={20} /> {mySignature ? 'ลายเซ็น ✓' : 'ตั้งลายเซ็น'}
-          </button>
-          <button onClick={() => setShowInviteQR(true)} className="bg-emerald-500 hover:bg-emerald-600 text-white px-6 py-4 rounded-2xl font-black transition flex items-center gap-2 shadow-lg shadow-emerald-100 active:scale-95 font-sans">
-            <QrCode size={20} /> ส่งลิงก์ผู้มาติดต่อ
-          </button>
-          <button onClick={() => setShowForm(!showForm)} className="bg-blue-600 hover:bg-blue-700 text-white px-8 py-4 rounded-2xl font-black transition flex items-center gap-2 shadow-lg shadow-blue-100 active:scale-95 font-sans">
-            <UserPlus size={20} /> นัดหมายใหม่
-          </button>
+            <div className="min-w-0">
+              <p className="text-[10px] font-bold uppercase tracking-[0.2em] text-slate-400 mb-0.5">
+                {hostIdentity?.roleType === 'HEAD' ? 'Department Head Console' : 'Employee Console'}
+              </p>
+              <h2 className="text-2xl md:text-[26px] font-bold text-slate-900 tracking-tight leading-tight">
+                แผงควบคุมแผนก
+              </h2>
+              <div className="flex items-center flex-wrap gap-x-2 gap-y-1 mt-2 text-[12px]">
+                <span className="text-slate-500">
+                  <span className="font-medium text-slate-700">{hostIdentity?.name || hostIdentity?.displayName || '-'}</span>
+                </span>
+                <span className="text-slate-300">·</span>
+                <span className="text-slate-500 font-mono">ID {hostIdentity.staffId}</span>
+                <span className="text-slate-300">·</span>
+                <span className="inline-flex items-center gap-1 text-slate-600 font-medium">
+                  <span className="w-1.5 h-1.5 rounded-full bg-blue-600"></span>
+                  {hostIdentity.department}
+                </span>
+              </div>
+              {hostIdentity?.roleType === 'HEAD' && (
+                <div className="flex items-center flex-wrap gap-1.5 mt-3 pt-3 border-t border-slate-100">
+                  <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400 mr-1">สถานะการทำงาน</span>
+                  {[
+                    { key: 'available', label: 'อยู่ประจำโต๊ะ', dotColor: 'bg-emerald-500', active: 'bg-emerald-50 text-emerald-700 border-emerald-200' },
+                    { key: 'busy', label: 'ไม่ว่าง', dotColor: 'bg-amber-500', active: 'bg-amber-50 text-amber-700 border-amber-200' },
+                    { key: 'away', label: 'ไม่อยู่', dotColor: 'bg-red-500', active: 'bg-red-50 text-red-700 border-red-200' },
+                  ].map((s) => (
+                    <button
+                      key={s.key}
+                      disabled={savingStatus}
+                      onClick={async () => {
+                        if (!firebaseReady || !db || !hostIdentity?.staffId) return;
+                        setSavingStatus(true);
+                        try {
+                          const { updateDoc, doc: fsDoc } = await import('firebase/firestore');
+                          await updateDoc(fsDoc(db, 'artifacts', appId, 'public', 'data', 'users', hostIdentity.staffId), { status: s.key });
+                          setMyStatus(s.key);
+                        } catch (e) { console.warn('update status failed:', e); }
+                        finally { setSavingStatus(false); }
+                      }}
+                      className={`inline-flex items-center gap-1.5 text-[11px] font-medium px-2.5 py-1 rounded-md border transition ${myStatus === s.key ? s.active : 'bg-white text-slate-500 border-slate-200 hover:bg-slate-50'}`}
+                    >
+                      <span className={`w-1.5 h-1.5 rounded-full ${s.dotColor}`}></span>
+                      {s.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Right: action buttons */}
+          <div className="flex gap-2 flex-wrap w-full lg:w-auto lg:justify-end">
+            <button
+              onClick={() => setShowMyQR(true)}
+              className="inline-flex items-center gap-2 bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 hover:border-slate-400 px-4 py-2.5 rounded-lg font-semibold text-[13px] transition active:scale-[0.98] font-sans"
+            >
+              <QrCode size={16} /> QR ของฉัน
+            </button>
+            <button
+              onClick={() => { setShowSignSetup(true); setSignSetupDataUrl(mySignature || ''); }}
+              className={`inline-flex items-center gap-2 px-4 py-2.5 rounded-lg font-semibold text-[13px] transition active:scale-[0.98] font-sans border ${
+                mySignature
+                  ? 'bg-white text-emerald-700 border-emerald-300 hover:bg-emerald-50'
+                  : 'bg-amber-50 text-amber-800 border-amber-300 hover:bg-amber-100'
+              }`}
+            >
+              <Edit size={16} /> {mySignature ? 'ลายเซ็น ✓' : 'ตั้งลายเซ็น'}
+            </button>
+            <button
+              onClick={() => setShowInviteQR(true)}
+              className="inline-flex items-center gap-2 bg-white hover:bg-emerald-50 text-emerald-700 border border-emerald-300 hover:border-emerald-400 px-4 py-2.5 rounded-lg font-semibold text-[13px] transition active:scale-[0.98] font-sans"
+            >
+              <QrCode size={16} /> ส่งลิงก์ผู้มาติดต่อ
+            </button>
+            <button
+              onClick={() => setShowForm(!showForm)}
+              className="inline-flex items-center gap-2 bg-blue-700 hover:bg-blue-800 text-white px-5 py-2.5 rounded-lg font-semibold text-[13px] transition active:scale-[0.98] font-sans shadow-sm"
+            >
+              <UserPlus size={16} /> นัดหมายใหม่
+            </button>
+          </div>
         </div>
       </div>
 
@@ -1066,8 +1478,10 @@ function HostView({ appointments, user, hostIdentity, role = 'HOST' }) {
                                     const collRef = collection(db, 'artifacts', appId, 'public', 'data', 'approval_workflows');
                                     const q2 = query(collRef, where('chainId', '==', n.chainId));
                                     const snap2 = await getDocs(q2);
-                                    const prev = snap2.docs.map(d => d.data()).filter(s => s.status === 'approved' && (s.step || 1) < (n.step || 1)).sort((a, b) => (a.step || 1) - (b.step || 1));
-                                    setDocModalPrevSteps(prev);
+                                    // รวมทุก step ใน chain ที่อนุมัติแล้ว — ทั้งก่อนหน้าและปัจจุบัน
+                                    // (ใช้ทั้งโชว์ timeline + ลายเซ็น 3 ฝ่าย)
+                                    const allSteps = snap2.docs.map(d => d.data()).filter(s => s.status === 'approved').sort((a, b) => (a.step || 1) - (b.step || 1));
+                                    setDocModalPrevSteps(allSteps);
                                   } catch (e) { console.warn('Load prev steps error:', e); }
                                 }
                               }}
@@ -1130,13 +1544,15 @@ function HostView({ appointments, user, hostIdentity, role = 'HOST' }) {
                       )}
                       <span
                         className={`text-[10px] font-black px-2.5 py-1 rounded-full ${
-                          w.isReturned
-                            ? 'bg-red-100 text-red-700'
-                            : w.isDone
-                              ? 'bg-emerald-100 text-emerald-700'
-                              : w.pending
-                                ? 'bg-amber-100 text-amber-700'
-                                : 'bg-slate-200 text-slate-600'
+                          w.isRejected
+                            ? 'bg-red-100 text-red-800 border border-red-300'
+                            : w.isReturned
+                              ? 'bg-red-100 text-red-700'
+                              : w.isDone
+                                ? 'bg-emerald-100 text-emerald-700'
+                                : w.pending
+                                  ? 'bg-amber-100 text-amber-700'
+                                  : 'bg-slate-200 text-slate-600'
                         }`}
                       >
                         {w.statusLabel}
@@ -1156,14 +1572,79 @@ function HostView({ appointments, user, hostIdentity, role = 'HOST' }) {
                       </div>
                     </div>
                   )}
-                  {/* แสดงผลจัดรถจาก GA */}
+                  {w.isRejected && (
+                    <div className="mt-2 bg-red-50 border-2 border-red-300 rounded-lg px-3 py-2.5">
+                      <div className="flex items-start gap-2">
+                        <span className="text-red-600 font-black text-base mt-0.5">❌</span>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-[11px] font-black text-red-800">
+                            ปฏิเสธโดย: {w.rejectedBy || '-'} {w.rejectedByRole ? `(${w.rejectedByRole})` : ''}
+                          </p>
+                          {w.rejectReason && (
+                            <p className="text-[12px] text-red-700 mt-1 whitespace-pre-wrap break-words">
+                              <span className="font-bold">เหตุผล:</span> {w.rejectReason}
+                            </p>
+                          )}
+                          {w.steps[0]?.sourceForm === 'VEHICLE_BOOKING' && w.rejected?.id && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const url = `/vehicle.html?resubmitFrom=${encodeURIComponent(w.rejected.id)}`;
+                                window.open(url, '_blank');
+                              }}
+                              className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-[11px] font-black transition active:scale-95"
+                            >
+                              ✏️ แก้ไขและส่งใหม่
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  {/* แสดงผลจัดรถจาก GA + ปุ่มส่งให้ รปภ. */}
                   {w.isDone && w.steps[0]?.sourceForm === 'VEHICLE_BOOKING' && (() => {
                     const gaStep = w.steps.find(s => s.targetType === 'GA' && s.status === 'approved');
                     if (!gaStep) return null;
+                    const refCode = (gaStep.id || w.steps[0]?.id || '').slice(-12).toUpperCase();
+                    const rp = w.steps[0]?.requestPayload || {};
+                    const reqName = w.steps[0]?.requesterName || '-';
+                    const reqId = w.steps[0]?.requesterId || '-';
+                    const handleShareToSec = async () => {
+                      const v = gaStep.assignedVehicle;
+                      const d = gaStep.assignedDriver;
+                      const noVeh = gaStep.vehicleResult === 'no_vehicle';
+                      const summary = noVeh
+                        ? `🚗 ใบขอใช้รถ TBKK\nREF: ${refCode}\nผู้ขอ: ${reqName} (${reqId})\nวันที่: ${rp.date || '-'} เวลา: ${rp.timeStart || '-'}-${rp.timeEnd || '-'}\n\n⚠️ ไม่มีรถบริษัท — ผู้ขอใช้รถส่วนตัว`
+                        : `🚗 ใบขอใช้รถ TBKK\nREF: ${refCode}\nผู้ขอ: ${reqName} (${reqId})\nวันที่: ${rp.date || '-'} เวลา: ${rp.timeStart || '-'}-${rp.timeEnd || '-'}\nรถ: ${v?.brand || ''} ${v?.model || ''} ทะเบียน: ${v?.plate || '-'}\n${d ? `คนขับ: ${d.name || '-'} โทร: ${d.phone || '-'}` : 'ขับเอง'}\n\n📌 ตรวจสอบที่ป้อม รปภ. ด้วยรหัส ${refCode}`;
+                      const url = `${window.location.origin}/index.html?approve=${gaStep.id || w.steps[0]?.id}`;
+                      const text = `${summary}\n\n${url}`;
+                      try {
+                        if (navigator.share) {
+                          await navigator.share({ title: `ใบขอใช้รถ REF: ${refCode}`, text, url });
+                        } else {
+                          await navigator.clipboard.writeText(text);
+                          alert(`✓ คัดลอกข้อมูลเอกสารแล้ว\nวางใน LINE/Outlook ส่งให้ รปภ. ได้เลย\n\nREF: ${refCode}`);
+                        }
+                      } catch (e) {
+                        if (e?.name !== 'AbortError') {
+                          try { await navigator.clipboard.writeText(text); alert('✓ คัดลอกข้อมูลแล้ว'); } catch {}
+                        }
+                      }
+                    };
                     if (gaStep.vehicleResult === 'no_vehicle') {
                       return (
                         <div className="mt-2 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
-                          <p className="text-[11px] font-black text-red-700">🚗 ผลจัดรถ:</p>
+                          <div className="flex items-center justify-between gap-2 mb-1">
+                            <p className="text-[11px] font-black text-red-700">🚗 ผลจัดรถ:</p>
+                            <button
+                              type="button"
+                              onClick={handleShareToSec}
+                              className="text-[10px] font-black px-2.5 py-1 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm flex items-center gap-1 active:scale-95 transition"
+                              title="คัดลอก/แชร์ข้อมูลเอกสารให้ รปภ."
+                            >
+                              📤 ส่งให้ รปภ.
+                            </button>
+                          </div>
                           <p className="text-sm text-red-600 font-bold mt-1">ไม่มีรถให้ใช้งาน ท่านสามารถเอารถของคุณไปใช้</p>
                         </div>
                       );
@@ -1173,7 +1654,17 @@ function HostView({ appointments, user, hostIdentity, role = 'HOST' }) {
                       const d = gaStep.assignedDriver;
                       return (
                         <div className="mt-2 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
-                          <p className="text-[11px] font-black text-emerald-700">🚗 ผลจัดรถ:</p>
+                          <div className="flex items-center justify-between gap-2 mb-1">
+                            <p className="text-[11px] font-black text-emerald-700">🚗 ผลจัดรถ: <span className="font-mono text-[10px] text-emerald-600 ml-1">REF: {refCode}</span></p>
+                            <button
+                              type="button"
+                              onClick={handleShareToSec}
+                              className="text-[10px] font-black px-2.5 py-1 rounded-md bg-emerald-600 hover:bg-emerald-700 text-white shadow-sm flex items-center gap-1 active:scale-95 transition"
+                              title="คัดลอก/แชร์ข้อมูลเอกสารให้ รปภ. ทาง LINE/Email"
+                            >
+                              📤 ส่งให้ รปภ.
+                            </button>
+                          </div>
                           <div className="text-sm mt-1 space-y-0.5">
                             <p><span className="font-bold">รถ:</span> {v.brand} <span className="font-bold">ทะเบียน:</span> {v.plate}</p>
                             {d && <p><span className="font-bold">คนขับ:</span> {d.name} <span className="font-bold">เบอร์โทร:</span> {d.phone}</p>}
@@ -1183,24 +1674,51 @@ function HostView({ appointments, user, hostIdentity, role = 'HOST' }) {
                     }
                     return null;
                   })()}
-                  <div className="mt-2 flex flex-wrap gap-1.5">
-                    {w.steps.map((s) => (
-                      <span
-                        key={s.id}
-                        className={`text-[9px] font-bold px-2 py-0.5 rounded-md border ${
-                          s.status === 'returned'
-                            ? 'bg-red-50 border-red-200 text-red-700'
-                            : s.status === 'approved'
-                              ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
-                              : s.status === 'pending'
-                                ? 'bg-amber-50 border-amber-200 text-amber-900'
-                                : 'bg-slate-100 border-slate-200 text-slate-600'
-                        }`}
-                      >
-                        {s.stepLabel || `ขั้น ${s.step || '?'}`}{' '}
-                        {s.status === 'approved' ? '✓' : s.status === 'pending' ? '…' : s.status === 'returned' ? '↩' : ''}
-                      </span>
-                    ))}
+                  {/* Timeline ผู้อนุมัติแต่ละขั้น — แสดงชื่อ + เวลา */}
+                  <div className="mt-2 space-y-1">
+                    {w.steps.map((s) => {
+                      const isApproved = s.status === 'approved';
+                      const isPending = s.status === 'pending';
+                      const isReturned = s.status === 'returned';
+                      const stepName = s.targetType === 'GA' ? 'GA จัดรถ' : (s.stepLabel || `ขั้น ${s.step || '?'}`);
+                      const approvedAt = s.acknowledgedAt ? new Date(s.acknowledgedAt).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) : '';
+                      return (
+                        <div
+                          key={s.id}
+                          className={`flex items-center gap-2 px-2.5 py-1.5 rounded-lg border ${
+                            isReturned
+                              ? 'bg-red-50 border-red-200'
+                              : isApproved
+                                ? 'bg-emerald-50 border-emerald-200'
+                                : isPending
+                                  ? 'bg-amber-50 border-amber-200'
+                                  : 'bg-slate-100 border-slate-200'
+                          }`}
+                        >
+                          <span className={`text-[12px] font-black flex-shrink-0 ${
+                            isApproved ? 'text-emerald-700' : isPending ? 'text-amber-700' : isReturned ? 'text-red-700' : 'text-slate-600'
+                          }`}>
+                            {isApproved ? '✓' : isPending ? '⏳' : isReturned ? '↩' : '○'}
+                          </span>
+                          <div className="flex-1 min-w-0">
+                            <p className={`text-[10px] font-black truncate ${
+                              isApproved ? 'text-emerald-800' : isPending ? 'text-amber-900' : isReturned ? 'text-red-700' : 'text-slate-600'
+                            }`}>
+                              {stepName}
+                              {isApproved && s.approvedBy && (
+                                <span className="ml-1 font-bold text-slate-700">— {s.approvedBy}</span>
+                              )}
+                            </p>
+                            {isApproved && approvedAt && (
+                              <p className="text-[9px] text-slate-500 mt-0.5">เมื่อ {approvedAt}</p>
+                            )}
+                            {isPending && (
+                              <p className="text-[9px] text-amber-700 mt-0.5 italic">รอผู้อนุมัติ...</p>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               ))}
@@ -1313,7 +1831,7 @@ function HostView({ appointments, user, hostIdentity, role = 'HOST' }) {
               </div>
             </div>
 
-            <div className="flex-1 overflow-y-auto px-6 pt-5 pb-4 bg-slate-50/60">
+            <div className="flex-1 overflow-y-auto px-6 pt-5 pb-4 bg-slate-50/60" id="doc-modal-printable">
 
             {(() => {
               const rp = docModalItem.requestPayload || {};
@@ -1686,24 +2204,181 @@ function HostView({ appointments, user, hostIdentity, role = 'HOST' }) {
                           <span className={`px-2.5 py-1 border rounded-md text-[11px] ${vDrivingOpt === '6.1' ? 'bg-indigo-600 text-white border-indigo-600 font-bold' : 'bg-white text-slate-700 border-slate-200'}`}>🚗 <b>6.1</b> ต้องการขับเอง</span>
                           <span className={`px-2.5 py-1 border rounded-md text-[11px] ${vDrivingOpt === '6.2' ? 'bg-indigo-600 text-white border-indigo-600 font-bold' : 'bg-white text-slate-700 border-slate-200'}`}>👤 <b>6.2</b> ต้องการใช้พนักงานขับรถให้</span>
                         </div>
-
-                        {rp.approvedCarNo && (
-                          <div className="mt-3 p-2 bg-emerald-50 border border-emerald-200 rounded-md">
-                            <p className="text-[11px] font-black text-emerald-800 mb-1">✓ รถที่อนุมัติแล้ว</p>
-                            <div className="grid grid-cols-2 gap-2">
-                              <VC label="ทะเบียนรถ" value={rp.approvedCarNo} />
-                              {rp.driver && <VC label="พนักงานขับรถ" value={rp.driver} />}
+                        {/* Easy Pass — แสดงเมื่อขับเอง (6.1) */}
+                        {vDrivingOpt === '6.1' && rp.easyPass && (
+                          <div className="mt-2 p-2 bg-amber-50 border border-amber-200 rounded-md">
+                            <p className="text-[10px] font-black text-amber-800 uppercase tracking-wider mb-1">💳 Easy Pass</p>
+                            <div className="flex flex-wrap gap-1.5">
+                              <span className={`px-2.5 py-1 border rounded-md text-[11px] ${rp.easyPass === '6.1.1' ? 'bg-emerald-600 text-white border-emerald-600 font-bold' : 'bg-white text-slate-500 border-slate-200'}`}>✓ <b>6.1.1</b> ต้องการ Easy Pass</span>
+                              <span className={`px-2.5 py-1 border rounded-md text-[11px] ${rp.easyPass === '6.1.2' ? 'bg-red-500 text-white border-red-500 font-bold' : 'bg-white text-slate-500 border-slate-200'}`}>✕ <b>6.1.2</b> ไม่ต้องการ Easy Pass</span>
                             </div>
                           </div>
                         )}
+
+                        {/* 🚗 ผลจัดรถ — โหลดจาก chain step ที่ targetType === 'GA' */}
+                        {(() => {
+                          const gaStep = docModalPrevSteps.find(s => s.targetType === 'GA');
+                          const gaVeh = gaStep?.assignedVehicle;
+                          const gaDrv = gaStep?.assignedDriver;
+                          const noVehicle = gaStep?.vehicleResult === 'no_vehicle';
+                          const refCode = (docModalItem.id || '').slice(-12).toUpperCase();
+                          // ยังไม่ถึงขั้น GA → placeholder (เพื่อให้หัวหน้าเห็นว่ามี section นี้ในเอกสาร)
+                          if (!gaStep) {
+                            return (
+                              <div className="mt-3 p-3 bg-slate-50 border-2 border-dashed border-slate-300 rounded-lg">
+                                <p className="text-[12px] font-black text-slate-500 mb-1">🚗 ผลจัดรถ:</p>
+                                <p className="text-[12px] italic text-slate-400">(รอ GA จัดรถหลังหัวหน้าอนุมัติ)</p>
+                              </div>
+                            );
+                          }
+                          if (noVehicle) {
+                            return (
+                              <div className="mt-3 p-3 bg-red-50 border-2 border-red-300 rounded-lg">
+                                <p className="text-[12px] font-black text-red-700 mb-1">🚗 ผลจัดรถ:</p>
+                                <p className="text-[14px] font-bold text-red-800">⚠️ ไม่มีรถให้ใช้งาน — ท่านสามารถเอารถของคุณไปใช้</p>
+                              </div>
+                            );
+                          }
+                          if (gaVeh) {
+                            const drivingOpt = vDrivingOpt;
+                            return (
+                              <div className="mt-3 p-3 bg-gradient-to-br from-emerald-50 to-green-50 border-2 border-emerald-300 rounded-lg">
+                                <div className="flex items-center justify-between mb-2">
+                                  <p className="text-[12px] font-black text-emerald-800">🚗 ผลจัดรถ:</p>
+                                  <span className="text-[10px] font-mono font-black bg-white text-emerald-700 px-2 py-0.5 rounded-full border border-emerald-300">REF: {refCode}</span>
+                                </div>
+                                {/* บรรทัดสรุปสไตล์เดียวกับ workflow list */}
+                                <div className="bg-white/70 rounded-md px-3 py-2 mb-2 text-[13px] space-y-0.5">
+                                  <p>
+                                    <span className="font-bold">รถ:</span> {gaVeh.brand || ''} {gaVeh.model || ''}
+                                    <span className="font-bold ml-2">ทะเบียน:</span> <span className="font-mono font-bold">{gaVeh.plate || '-'}</span>
+                                  </p>
+                                  {gaDrv && (gaDrv.name || gaDrv.phone) && (
+                                    <p>
+                                      <span className="font-bold">คนขับ:</span> {gaDrv.nickname ? `${gaDrv.nickname} (${gaDrv.name})` : (gaDrv.name || '-')}
+                                      {gaDrv.phone && (<><span className="font-bold ml-2">เบอร์โทร:</span> <span className="font-mono">{gaDrv.phone}</span></>)}
+                                    </p>
+                                  )}
+                                </div>
+                                <div className="grid grid-cols-2 gap-2 mb-2">
+                                  <VC label="🚗 ทะเบียน" value={gaVeh.plate || '-'} />
+                                  <VC label="ยี่ห้อ/รุ่น" value={`${gaVeh.brand || ''} ${gaVeh.model || ''}`.trim() || '-'} />
+                                </div>
+                                {(gaVeh.color || gaVeh.type || gaVeh.seats) && (
+                                  <div className="grid grid-cols-3 gap-2 mb-2">
+                                    {gaVeh.color && <VC label="สีรถ" value={gaVeh.color} />}
+                                    {gaVeh.type && <VC label="ประเภท" value={gaVeh.type} />}
+                                    {gaVeh.seats && <VC label="จำนวนที่นั่ง" value={`${gaVeh.seats} ที่`} />}
+                                  </div>
+                                )}
+                                {/* บัตร/การ์ดเข้า-ออก (ถ้าระบบบันทึก) */}
+                                {(gaVeh.cardNo || gaVeh.accessCard || gaVeh.parkingCard) && (
+                                  <div className="mb-2 p-2 bg-yellow-50 border border-yellow-300 rounded-md">
+                                    <p className="text-[10px] font-bold text-yellow-800">💳 บัตร/การ์ดเข้า-ออก</p>
+                                    <p className="text-[12px] font-black text-yellow-900 font-mono">{gaVeh.cardNo || gaVeh.accessCard || gaVeh.parkingCard}</p>
+                                  </div>
+                                )}
+                                {/* คนขับ — แสดงเมื่อขอคนขับ (6.2) */}
+                                {drivingOpt === '6.2' && gaDrv && (
+                                  <div className="mt-2 p-2 bg-white border-2 border-emerald-200 rounded-md">
+                                    <p className="text-[10px] font-black text-emerald-700 uppercase tracking-wider mb-1">👤 พนักงานขับรถ</p>
+                                    <div className="grid grid-cols-2 gap-2">
+                                      <VC label="ชื่อ" value={gaDrv.nickname ? `${gaDrv.nickname} (${gaDrv.name})` : (gaDrv.name || '-')} />
+                                      {gaDrv.phone && <VC label="📞 โทร" value={gaDrv.phone} />}
+                                    </div>
+                                    {gaDrv.licenseType && (
+                                      <p className="text-[10px] text-slate-500 mt-1">ใบขับขี่: <span className="font-bold text-slate-700">{gaDrv.licenseType}</span></p>
+                                    )}
+                                  </div>
+                                )}
+                                {/* แจ้งเตือนสำหรับขับเอง (6.1) */}
+                                {drivingOpt === '6.1' && (
+                                  <div className="mt-2 p-2 bg-blue-50 border border-blue-200 rounded-md">
+                                    <p className="text-[10px] font-bold text-blue-800">🚘 ขับเอง — รับกุญแจที่ GA</p>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          }
+                          // Fallback: ใช้ approvedCarNo เก่าถ้าไม่มี chain GA step
+                          if (rp.approvedCarNo) {
+                            return (
+                              <div className="mt-3 p-2 bg-emerald-50 border border-emerald-200 rounded-md">
+                                <p className="text-[11px] font-black text-emerald-800 mb-1">✓ รถที่อนุมัติแล้ว</p>
+                                <div className="grid grid-cols-2 gap-2">
+                                  <VC label="ทะเบียนรถ" value={rp.approvedCarNo} />
+                                  {rp.driver && <VC label="พนักงานขับรถ" value={rp.driver} />}
+                                </div>
+                              </div>
+                            );
+                          }
+                          return null;
+                        })()}
                       </div>
 
-                      {rp.requesterSign && (
-                        <div className="border-t border-slate-200 p-2 text-center bg-slate-50">
-                          <div className="h-10 flex items-center justify-center"><img src={rp.requesterSign} alt="" className="h-8 object-contain" /></div>
-                          <p className="text-[10px] font-bold text-slate-600 pt-1">ผู้ขออนุญาต</p>
-                        </div>
-                      )}
+                      {/* ลายเซ็น 3 คน: ผู้ขอ + หัวหน้าแผนก + GA */}
+                      {(() => {
+                        const headStep = docModalPrevSteps.find(s => (s.step || 0) === 1) || null;
+                        const gaStep = docModalPrevSteps.find(s => s.targetType === 'GA') || null;
+                        return (
+                          <div className="border-t-2 border-dashed border-slate-300 p-3 bg-slate-50">
+                            <p className="text-[10px] font-black text-slate-500 uppercase tracking-widest mb-2 text-center">✍️ ลายเซ็นครบทุกฝ่าย (3 คน)</p>
+                            <div className="grid grid-cols-3 gap-2">
+                              {/* 1. ผู้ขอใช้รถ */}
+                              <div className="bg-blue-50 border border-blue-200 rounded-lg p-2 text-center">
+                                <p className="text-[9px] font-bold text-blue-700 uppercase tracking-wider mb-1">👤 ผู้ขอใช้รถ</p>
+                                <div className="h-10 flex items-center justify-center">
+                                  {rp.requesterSign ? (
+                                    <img src={rp.requesterSign} alt="ลายเซ็น" className="h-8 max-w-full object-contain" />
+                                  ) : (
+                                    <span className="text-[10px] italic text-slate-300">(ลายเซ็น)</span>
+                                  )}
+                                </div>
+                                <div className="border-t border-blue-200 mt-1 pt-1">
+                                  <p className="text-[10px] font-bold text-slate-800 leading-tight">{rp.name || docModalItem.requesterName || '-'}</p>
+                                  <p className="text-[9px] text-slate-500 mt-0.5 font-mono">{docModalItem.requesterId || '-'}</p>
+                                </div>
+                              </div>
+
+                              {/* 2. หัวหน้าแผนก */}
+                              <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-2 text-center">
+                                <p className="text-[9px] font-bold text-emerald-700 uppercase tracking-wider mb-1">👨‍💼 หัวหน้าแผนก</p>
+                                <div className="h-10 flex items-center justify-center">
+                                  {headStep?.approvedSign ? (
+                                    <img src={headStep.approvedSign} alt="ลายเซ็นหัวหน้า" className="h-8 max-w-full object-contain" />
+                                  ) : (
+                                    <span className="text-[10px] italic text-slate-300">(รออนุมัติ)</span>
+                                  )}
+                                </div>
+                                <div className="border-t border-emerald-200 mt-1 pt-1">
+                                  <p className="text-[10px] font-bold text-slate-800 leading-tight">{headStep?.approvedBy || '-'}</p>
+                                  <p className="text-[9px] text-emerald-700 mt-0.5">
+                                    {headStep?.acknowledgedAt ? new Date(headStep.acknowledgedAt).toLocaleDateString('th-TH', { day: '2-digit', month: 'short' }) : ''}
+                                  </p>
+                                </div>
+                              </div>
+
+                              {/* 3. GA จัดรถ */}
+                              <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-2 text-center">
+                                <p className="text-[9px] font-bold text-emerald-700 uppercase tracking-wider mb-1">🚗 GA จัดรถ</p>
+                                <div className="h-10 flex items-center justify-center">
+                                  {gaStep?.approvedSign ? (
+                                    <img src={gaStep.approvedSign} alt="ลายเซ็น GA" className="h-8 max-w-full object-contain" />
+                                  ) : (
+                                    <span className="text-[10px] italic text-slate-300">(รอ GA จัดรถ)</span>
+                                  )}
+                                </div>
+                                <div className="border-t border-emerald-200 mt-1 pt-1">
+                                  <p className="text-[10px] font-bold text-slate-800 leading-tight">{gaStep?.approvedBy || '-'}</p>
+                                  <p className="text-[9px] text-emerald-700 mt-0.5">
+                                    {gaStep?.acknowledgedAt ? new Date(gaStep.acknowledgedAt).toLocaleDateString('th-TH', { day: '2-digit', month: 'short' }) : ''}
+                                  </p>
+                                </div>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })()}
                     </div>
                   );
                 }
@@ -1760,33 +2435,6 @@ function HostView({ appointments, user, hostIdentity, role = 'HOST' }) {
               }
             })()}
 
-            {/* ลายเซ็นขั้นตอนก่อนหน้า — แบบการ์ดสวยงาม */}
-            {docModalPrevSteps.length > 0 && (
-              <div className="mt-4">
-                <div className="flex items-center gap-2 mb-2">
-                  <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-blue-100 text-blue-800 text-[12px] font-black border border-blue-200">
-                    <CheckCircle2 className="w-3.5 h-3.5" /> ลายเซ็นขั้นตอนก่อนหน้า
-                  </span>
-                  <span className="text-[11px] text-slate-400">{docModalPrevSteps.filter(s => s.approvedSign || s.approvedBy).length} ขั้นตอน</span>
-                </div>
-                <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
-                  {docModalPrevSteps.filter(s => s.approvedSign || s.approvedBy).map((s, i) => (
-                    <div key={i} className="rounded-xl bg-white border border-slate-200 shadow-sm overflow-hidden">
-                      <div className="h-16 flex items-center justify-center bg-slate-50 border-b border-slate-100">
-                        {s.approvedSign
-                          ? <img src={s.approvedSign} alt="" className="h-12 object-contain" />
-                          : <div className="text-slate-300 text-[10px]">— ไม่มีลายเซ็น —</div>}
-                      </div>
-                      <div className="p-2 text-center">
-                        <p className="text-[12px] font-black text-slate-800 truncate">{s.approvedBy || '-'}</p>
-                        <p className="text-[10px] text-blue-600 font-bold">{s.stepLabel || `ขั้น ${s.step}`}</p>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
             </div>{/* /scroll body */}
 
             {/* Sticky Footer */}
@@ -1798,18 +2446,118 @@ function HostView({ appointments, user, hostIdentity, role = 'HOST' }) {
               >
                 ปิด
               </button>
-              <button
-                type="button"
-                onClick={() => {
-                  setDocModalItem(null);
-                  setShowRecheckInput(false);
-                  setRecheckNote('');
-                  openSignModal(docModalItem);
-                }}
-                className="px-5 py-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 text-white hover:from-blue-700 hover:to-indigo-700 text-sm font-black shadow-md shadow-blue-600/20 flex items-center gap-2 transition"
-              >
-                <CheckCircle2 className="w-4 h-4" /> เซ็นอนุมัติเอกสารนี้
-              </button>
+              {/* ปุ่ม PDF + ส่งให้ รปภ. — แสดงเฉพาะ VEHICLE_BOOKING เมื่อ GA อนุมัติแล้ว */}
+              {docModalItem.sourceForm === 'VEHICLE_BOOKING' && (() => {
+                const gaStep = docModalPrevSteps.find(s => s.targetType === 'GA' && s.status === 'approved');
+                const headStep = docModalPrevSteps.find(s => (s.step || 0) === 1 && s.status === 'approved');
+                const refCode = (docModalItem.id || '').slice(-12).toUpperCase();
+                const rp = docModalItem.requestPayload || {};
+                const v = gaStep?.assignedVehicle;
+                const d = gaStep?.assignedDriver;
+                const noVeh = gaStep?.vehicleResult === 'no_vehicle';
+
+                // เปิดหน้า PDF (print-friendly + Save as PDF ได้จาก browser)
+                const handleOpenPDF = () => {
+                  const printData = {
+                    requesterId: docModalItem.requesterId,
+                    name: docModalItem.requesterName || rp.name,
+                    department: docModalItem.requesterDepartment || rp.department,
+                    email: rp.email,
+                    staffId: docModalItem.requesterId,
+                    passengers: rp.passengers,
+                    routes: rp.routes,
+                    destination: rp.destination,
+                    date: rp.date,
+                    timeStart: rp.timeStart,
+                    timeEnd: rp.timeEnd,
+                    purpose: rp.purpose,
+                    drivingOption: rp.drivingOption || (rp.driveSelf ? '6.1' : rp.needDriver ? '6.2' : ''),
+                    easyPass: rp.easyPass,
+                    note: rp.note,
+                    sigUser: rp.requesterSign,
+                    // GA + Head
+                    headSign: headStep?.approvedSign,
+                    headName: headStep?.approvedBy,
+                    headApprovedAt: headStep?.acknowledgedAt ? new Date(headStep.acknowledgedAt).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) : '',
+                    gaSign: gaStep?.approvedSign,
+                    gaName: gaStep?.approvedBy,
+                    gaApprovedAt: gaStep?.acknowledgedAt ? new Date(gaStep.acknowledgedAt).toLocaleString('th-TH', { dateStyle: 'short', timeStyle: 'short' }) : '',
+                    gaPlate: v?.plate,
+                    gaBrand: v?.brand,
+                    gaModel: v?.model,
+                    gaDriverName: d ? (d.nickname ? `${d.nickname} (${d.name})` : d.name) : '',
+                    gaDriverPhone: d?.phone,
+                    gaNoVehicle: noVeh,
+                    refCode,
+                  };
+                  printVehicleBooking(printData);
+                };
+
+                // ส่งให้ รปภ. — share/copy พร้อมข้อความ
+                const handleShareToSec = async () => {
+                  if (!gaStep) {
+                    alert('⚠️ ยังไม่มีข้อมูลผลจัดรถจาก GA — รอ GA อนุมัติก่อน');
+                    return;
+                  }
+                  const summary = noVeh
+                    ? `🚗 ใบขอใช้รถ TBKK\nREF: ${refCode}\nผู้ขอ: ${docModalItem.requesterName || '-'} (${docModalItem.requesterId || '-'})\nวันที่: ${rp.date || '-'} เวลา: ${rp.timeStart || '-'}-${rp.timeEnd || '-'}\n\n⚠️ ไม่มีรถบริษัท — ผู้ขอใช้รถส่วนตัว`
+                    : `🚗 ใบขอใช้รถ TBKK\nREF: ${refCode}\nผู้ขอ: ${docModalItem.requesterName || '-'} (${docModalItem.requesterId || '-'})\nวันที่: ${rp.date || '-'} เวลา: ${rp.timeStart || '-'}-${rp.timeEnd || '-'}\nรถ: ${v?.brand || ''} ${v?.model || ''} ทะเบียน: ${v?.plate || '-'}\n${d ? `คนขับ: ${d.name || '-'} โทร: ${d.phone || '-'}` : 'ขับเอง'}${rp.easyPass ? `\nEasy Pass: ${rp.easyPass === '6.1.1' ? 'ต้องการ' : 'ไม่ต้องการ'}` : ''}\n\n📌 ตรวจสอบที่ป้อม รปภ. ด้วยรหัส ${refCode}`;
+                  const url = `${window.location.origin}/index.html?approve=${docModalItem.id}`;
+                  const text = `${summary}\n\n${url}`;
+                  try {
+                    if (navigator.share) {
+                      await navigator.share({ title: `ใบขอใช้รถ REF: ${refCode}`, text, url });
+                    } else {
+                      await navigator.clipboard.writeText(text);
+                      alert(`✓ คัดลอกข้อมูลเอกสารแล้ว\nวางใน LINE/Outlook ส่งให้ รปภ. ได้เลย\n\nREF: ${refCode}`);
+                    }
+                  } catch (e) {
+                    if (e?.name !== 'AbortError') {
+                      try { await navigator.clipboard.writeText(text); alert('✓ คัดลอกข้อมูลแล้ว'); } catch {}
+                    }
+                  }
+                };
+
+                return (
+                  <>
+                    {/* ปุ่ม PDF — แสดงตลอด (ไม่ต้องรอ GA) */}
+                    <button
+                      type="button"
+                      onClick={handleOpenPDF}
+                      className="px-4 py-2 rounded-xl bg-gradient-to-r from-rose-600 to-red-600 text-white hover:from-rose-700 hover:to-red-700 text-sm font-black shadow-md shadow-red-600/20 flex items-center gap-2 transition"
+                      title="เปิดหน้า PDF — กด Ctrl+P หรือปุ่มพิมพ์ใน browser → เลือก 'Save as PDF'"
+                    >
+                      📄 ดาวน์โหลด PDF
+                    </button>
+                    {/* ปุ่มส่งให้ รปภ. — แสดงเมื่อ GA อนุมัติแล้ว */}
+                    {gaStep && (
+                      <button
+                        type="button"
+                        onClick={handleShareToSec}
+                        className="px-4 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-green-600 text-white hover:from-emerald-700 hover:to-green-700 text-sm font-black shadow-md shadow-emerald-600/20 flex items-center gap-2 transition"
+                        title="คัดลอก/แชร์ข้อมูลเอกสารให้ รปภ. ทาง LINE/Email"
+                      >
+                        📤 ส่งให้ รปภ.
+                      </button>
+                    )}
+                  </>
+                );
+              })()}
+              {/* ปุ่มเซ็นอนุมัติ — แสดงเฉพาะเมื่อยังเป็น pending */}
+              {docModalItem.status === 'pending' && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setDocModalItem(null);
+                    setShowRecheckInput(false);
+                    setRecheckNote('');
+                    openSignModal(docModalItem);
+                  }}
+                  className="px-5 py-2 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 text-white hover:from-blue-700 hover:to-indigo-700 text-sm font-black shadow-md shadow-blue-600/20 flex items-center gap-2 transition"
+                >
+                  <CheckCircle2 className="w-4 h-4" /> เซ็นอนุมัติเอกสารนี้
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -1844,11 +2592,12 @@ function HostView({ appointments, user, hostIdentity, role = 'HOST' }) {
             {(() => {
               const sourceForm = signatureTrackingDoc.sourceForm || '';
               const isVehicle = sourceForm === 'VEHICLE_BOOKING';
+              const isOrder = ['FOOD_ORDER', 'DRINK_ORDER', 'DRINK_FOOD_ORDER'].includes(sourceForm);
               const hasSecurityStep = ['OUTING_REQUEST', 'GOODS_IN_OUT', 'VISITOR'].includes(sourceForm);
               const stepDefs = [
                 { step: 0, label: 'Prepare (พนักงาน)' },
                 { step: 1, label: 'Check (หัวหน้าแผนก)' },
-                { step: 2, label: isVehicle ? 'GA จัดรถ' : 'Approve (ผจก./HR/EEE)' },
+                { step: 2, label: isVehicle ? 'GA จัดรถ' : isOrder ? 'GA รับออเดอร์' : 'Approve (ผจก./HR/EEE)' },
               ];
               if (hasSecurityStep) {
                 stepDefs.push({ step: 3, label: 'รปภ. รับทราบ' });
@@ -1884,14 +2633,20 @@ function HostView({ appointments, user, hostIdentity, role = 'HOST' }) {
                               <div style={{ fontSize: 9, color: '#94a3b8', marginTop: 2 }}>{def.label}</div>
                             </div>
                           ) : stepData && stepData.status === 'approved' ? (
-                            <div className="shrink-0" style={{ textAlign: 'center', padding: 16, background: '#f0fdf4', border: '2px solid #86efac', borderRadius: 16, minWidth: 130 }}>
-                              {stepData.approvedSign && (
-                                <img src={stepData.approvedSign} alt="signature" style={{ width: 100, height: 40, objectFit: 'contain', margin: '0 auto 8px' }} />
+                            <div className="shrink-0" style={{ textAlign: 'center', padding: 14, background: '#f0fdf4', border: '2px solid #86efac', borderRadius: 16, minWidth: 160, boxShadow: '0 2px 6px rgba(22,163,74,0.1)' }}>
+                              <div style={{ fontSize: 9, fontWeight: 900, color: '#15803d', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6, padding: '2px 8px', background: '#fff', borderRadius: 999, display: 'inline-block', border: '1px solid #86efac' }}>
+                                {def.label}
+                              </div>
+                              {stepData.approvedSign ? (
+                                <div style={{ background: '#fff', borderRadius: 8, padding: '6px 8px', marginBottom: 6, border: '1px solid #d1fae5' }}>
+                                  <img src={stepData.approvedSign} alt="signature" style={{ width: '100%', maxWidth: 130, height: 36, objectFit: 'contain', display: 'block', margin: '0 auto' }} />
+                                </div>
+                              ) : (
+                                <div style={{ fontSize: 28, marginBottom: 4 }}>✍️</div>
                               )}
-                              <div style={{ fontWeight: 900, fontSize: 12 }}>{stepData.approvedBy || '-'}</div>
-                              <div style={{ fontSize: 10, color: '#666' }}>{stepData.approvedDate || (stepData.acknowledgedAt ? stepData.acknowledgedAt.split('T')[0] : '-')}</div>
-                              <div style={{ marginTop: 4, fontSize: 11, fontWeight: 900, color: '#16a34a' }}>&#10003; อนุมัติแล้ว</div>
-                              <div style={{ fontSize: 9, color: '#94a3b8', marginTop: 2 }}>{def.label}</div>
+                              <div style={{ fontWeight: 900, fontSize: 13, color: '#0f172a', lineHeight: 1.2 }}>👤 {stepData.approvedBy || '-'}</div>
+                              <div style={{ fontSize: 10, color: '#64748b', marginTop: 3 }}>📅 {stepData.approvedDate || (stepData.acknowledgedAt ? new Date(stepData.acknowledgedAt).toLocaleDateString('th-TH', { day: '2-digit', month: 'short' }) : '-')}</div>
+                              <div style={{ marginTop: 6, fontSize: 11, fontWeight: 900, color: '#16a34a', background: '#dcfce7', padding: '2px 8px', borderRadius: 999, display: 'inline-block' }}>✓ อนุมัติแล้ว</div>
                             </div>
                           ) : stepData && stepData.status === 'pending' ? (
                             <div className="shrink-0" style={{ textAlign: 'center', padding: 16, background: '#fefce8', border: '2px solid #fde047', borderRadius: 16, minWidth: 130 }}>
@@ -1938,14 +2693,20 @@ function HostView({ appointments, user, hostIdentity, role = 'HOST' }) {
                               <div style={{ fontSize: 9, color: '#94a3b8' }}>{def.label}</div>
                             </div>
                           ) : stepData && stepData.status === 'approved' ? (
-                            <div style={{ textAlign: 'center', padding: 14, background: '#f0fdf4', border: '2px solid #86efac', borderRadius: 16, width: '100%', maxWidth: 280 }}>
-                              {stepData.approvedSign && (
-                                <img src={stepData.approvedSign} alt="signature" style={{ width: 80, height: 32, objectFit: 'contain', margin: '0 auto 6px' }} />
+                            <div style={{ textAlign: 'center', padding: 14, background: '#f0fdf4', border: '2px solid #86efac', borderRadius: 16, width: '100%', maxWidth: 280, boxShadow: '0 2px 6px rgba(22,163,74,0.1)' }}>
+                              <div style={{ fontSize: 9, fontWeight: 900, color: '#15803d', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6, padding: '2px 8px', background: '#fff', borderRadius: 999, display: 'inline-block', border: '1px solid #86efac' }}>
+                                {def.label}
+                              </div>
+                              {stepData.approvedSign ? (
+                                <div style={{ background: '#fff', borderRadius: 8, padding: '6px 8px', marginBottom: 6, border: '1px solid #d1fae5' }}>
+                                  <img src={stepData.approvedSign} alt="signature" style={{ width: '100%', maxWidth: 120, height: 36, objectFit: 'contain', display: 'block', margin: '0 auto' }} />
+                                </div>
+                              ) : (
+                                <div style={{ fontSize: 28, marginBottom: 4 }}>✍️</div>
                               )}
-                              <div style={{ fontWeight: 900, fontSize: 12 }}>{stepData.approvedBy || '-'}</div>
-                              <div style={{ fontSize: 10, color: '#666' }}>{stepData.approvedDate || (stepData.acknowledgedAt ? stepData.acknowledgedAt.split('T')[0] : '-')}</div>
-                              <div style={{ marginTop: 4, fontSize: 11, fontWeight: 900, color: '#16a34a' }}>&#10003; อนุมัติแล้ว</div>
-                              <div style={{ fontSize: 9, color: '#94a3b8' }}>{def.label}</div>
+                              <div style={{ fontWeight: 900, fontSize: 13, color: '#0f172a' }}>👤 {stepData.approvedBy || '-'}</div>
+                              <div style={{ fontSize: 10, color: '#64748b', marginTop: 3 }}>📅 {stepData.approvedDate || (stepData.acknowledgedAt ? new Date(stepData.acknowledgedAt).toLocaleDateString('th-TH', { day: '2-digit', month: 'short' }) : '-')}</div>
+                              <div style={{ marginTop: 6, fontSize: 11, fontWeight: 900, color: '#16a34a', background: '#dcfce7', padding: '2px 8px', borderRadius: 999, display: 'inline-block' }}>✓ อนุมัติแล้ว</div>
                             </div>
                           ) : stepData && stepData.status === 'pending' ? (
                             <div style={{ textAlign: 'center', padding: 14, background: '#fefce8', border: '2px solid #fde047', borderRadius: 16, width: '100%', maxWidth: 280 }}>
@@ -1972,7 +2733,16 @@ function HostView({ appointments, user, hostIdentity, role = 'HOST' }) {
             <div className="mt-6 flex justify-end gap-3">
               <button
                 type="button"
-                onClick={() => { setDocModalItem(signatureTrackingDoc); setSignatureTrackingDoc(null); setSignatureTrackingSteps([]); }}
+                onClick={() => {
+                  // โอน chain steps ที่ approved แล้วไปให้ doc modal — เพื่อให้ลายเซ็น 3 ฝ่าย + ผลจัดรถขึ้น
+                  const approvedSteps = (signatureTrackingSteps || []).filter(s => s.status === 'approved').sort((a, b) => (a.step || 1) - (b.step || 1));
+                  setDocModalPrevSteps(approvedSteps);
+                  // ใช้ step ล่าสุด (มี gaStep ถ้ามี) เป็น docModalItem เพื่อแสดงข้อมูลครบ
+                  const latestStep = approvedSteps[approvedSteps.length - 1] || signatureTrackingDoc;
+                  setDocModalItem(latestStep);
+                  setSignatureTrackingDoc(null);
+                  setSignatureTrackingSteps([]);
+                }}
                 className="px-6 py-3 rounded-xl bg-blue-600 text-white hover:bg-blue-700 text-sm font-bold flex items-center gap-2 shadow"
               >
                 <FileText size={16} /> ดูเอกสาร
@@ -1989,33 +2759,37 @@ function HostView({ appointments, user, hostIdentity, role = 'HOST' }) {
         </div>
       )}
 
-      {/* ส่วนบริการเพิ่มเติมที่อัปเดตใหม่ */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4 font-sans text-left">
-        <ServiceButton 
-          icon={<Car className="text-blue-600" />} 
-          label="แบบฟอร์มใบขออนุญาตใช้รถของบริษัท"
-          onClick={() => window.open(`/vehicle.html?name=${encodeURIComponent(hostIdentity?.name || '')}&staffId=${encodeURIComponent(hostIdentity?.staffId || '')}&dept=${encodeURIComponent(hostIdentity?.department || '')}`, '_blank')}
-        />
-        <ServiceButton
-          icon={<><Utensils className="text-orange-600 inline" /><Coffee className="text-emerald-600 inline ml-1" /></>}
-          label="แบบฟอร์มขออาหารและเครื่องดื่มบริษัท"
-          onClick={() => window.open(`/drink.html?name=${encodeURIComponent(hostIdentity?.name || '')}&staffId=${encodeURIComponent(hostIdentity?.staffId || '')}&dept=${encodeURIComponent(hostIdentity?.department || '')}`, '_blank')}
-        />
-        <ServiceButton
-          icon={<ExternalLink className="text-red-600" />}
-          label="ขอออกข้างนอก"
-          onClick={() => window.open(`/outing.html?name=${encodeURIComponent(hostIdentity?.name || '')}&staffId=${encodeURIComponent(hostIdentity?.staffId || '')}&dept=${encodeURIComponent(hostIdentity?.department || '')}`, '_blank')}
-        />
-        <ServiceButton
-          icon={<Package className="text-purple-600" />}
-          label="เบิกอุปกรณ์ในสำนักงาน"
-          onClick={() => window.open(`/equipment.html?name=${encodeURIComponent(hostIdentity?.name || '')}&staffId=${encodeURIComponent(hostIdentity?.staffId || '')}&dept=${encodeURIComponent(hostIdentity?.department || '')}`, '_blank')}
-        />
-        <ServiceButton
-          icon={<Truck className="text-amber-600" />}
-          label="นำของเข้า / ของออก"
-          onClick={() => window.open(`/goods.html?name=${encodeURIComponent(hostIdentity?.name || '')}&staffId=${encodeURIComponent(hostIdentity?.staffId || '')}&dept=${encodeURIComponent(hostIdentity?.department || '')}`, '_blank')}
-        />
+      {/* Mobile-only grid (Desktop ใช้ sidebar ซ้าย) — แสดงทั้ง 5 ฟอร์ม */}
+      <div className="lg:hidden grid grid-cols-2 sm:grid-cols-3 gap-4 font-sans text-left">
+        {[
+          { key: 'vehicle',   url: 'vehicle.html',   label: 'แบบฟอร์มใบขออนุญาตใช้รถของบริษัท', icon: <Car className="text-blue-600" /> },
+          { key: 'drink',     url: 'drink.html',     label: 'แบบฟอร์มขออาหารและเครื่องดื่มบริษัท', icon: <><Utensils className="text-orange-600 inline" /><Coffee className="text-emerald-600 inline ml-1" /></> },
+          { key: 'outing',    url: 'outing.html',    label: 'ขอออกข้างนอก',                       icon: <ExternalLink className="text-red-600" /> },
+          { key: 'equipment', url: 'equipment.html', label: 'เบิกอุปกรณ์ในสำนักงาน',                icon: <Package className="text-purple-600" /> },
+          { key: 'goods',     url: 'goods.html',     label: 'นำของเข้า / ของออก',                  icon: <Truck className="text-amber-600" /> },
+        ].map((f, i) => {
+          const enabled = formStatus[f.key] !== false;
+          return enabled ? (
+            <ServiceButton
+              key={i}
+              icon={f.icon}
+              label={f.label}
+              onClick={() => window.open(`/${f.url}?name=${encodeURIComponent(hostIdentity?.name || '')}&staffId=${encodeURIComponent(hostIdentity?.staffId || '')}&dept=${encodeURIComponent(hostIdentity?.department || '')}`, '_blank')}
+            />
+          ) : (
+            <button
+              key={i}
+              onClick={() => alert('ฟอร์มนี้ยังไม่เปิดให้ใช้งาน')}
+              className="flex items-center gap-4 bg-slate-50 border border-slate-200 p-6 rounded-[1.8rem] text-left font-sans cursor-not-allowed opacity-60"
+            >
+              <div className="grayscale">{f.icon}</div>
+              <div className="flex-1">
+                <p className="font-black text-slate-400 text-xs uppercase tracking-widest leading-tight">{f.label}</p>
+                <p className="text-[9px] text-slate-400 font-bold mt-1">🔒 ปิดอยู่</p>
+              </div>
+            </button>
+          );
+        })}
       </div>
 
       {serviceMessage && (
@@ -2622,6 +3396,7 @@ function HostView({ appointments, user, hostIdentity, role = 'HOST' }) {
           </div>
         </div>
       )}
+      </div>
     </div>
   );
 }
@@ -3671,7 +4446,7 @@ function CheckInModal({ appt, onClose, cardNo, setCardNo, submitFn }) {
 }
 
 // --- Admin View (หน้าจอผู้ดูแลระบบ) ---
-function AdminView({ appointments, user }) {
+function AdminView({ appointments, user, formStatus = {}, toggleFormStatus = () => {} }) {
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('ALL');
   const [editingAppt, setEditingAppt] = useState(null);
@@ -3687,8 +4462,23 @@ function AdminView({ appointments, user }) {
   const [showUserManagement, setShowUserManagement] = useState(false);
   const [allUsers, setAllUsers] = useState([]);
   const [userSearch, setUserSearch] = useState('');
+  const [filterCompany, setFilterCompany] = useState('');
+  const [filterDivision, setFilterDivision] = useState('');
+  const [filterDepartment, setFilterDepartment] = useState('');
+  const [filterSection, setFilterSection] = useState('');
+  const [filterPosition, setFilterPosition] = useState('');
   const [showAddUserModal, setShowAddUserModal] = useState(false);
-  const [newUserForm, setNewUserForm] = useState({ id: '', name: '', department: DEPARTMENTS[0], role: 'EMPLOYEE' });
+  const [newUserForm, setNewUserForm] = useState({
+    id: '', name: '', email: '',
+    company: '', division: '', department: DEPARTMENTS[0], section: '', position: '',
+    role: 'EMPLOYEE',
+  });
+  const [editingUser, setEditingUser] = useState(null); // user object หรือ null
+  const [editUserForm, setEditUserForm] = useState({});
+  const [importPreview, setImportPreview] = useState(null);  // { updates, notFound, totalRows }
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState(null);
+  const importFileRef = useRef(null);
 
   // --- Feature 2: Audit Log Viewer ---
   const [showAuditLogs, setShowAuditLogs] = useState(false);
@@ -3726,7 +4516,14 @@ function AdminView({ appointments, user }) {
       if (!snap.exists()) { setEmpEditorResult({ ok: false, msg: `ไม่พบรหัสพนักงาน "${id}" ในระบบ` }); return; }
       const d = { docId: id, ...snap.data() };
       setEmpEditorData(d);
-      setEmpEditorEdit({ name: d.name || '', department: d.department || '', role: d.role || 'EMPLOYEE', active: d.active !== false });
+      setEmpEditorEdit({
+        name: d.name || '',
+        department: d.department || '',
+        role: d.role || 'EMPLOYEE',
+        active: d.active !== false,
+        approvalLevel: d.approvalLevel || 0,
+        approvalLevelSetBy: d.approvalLevelSetBy || null,
+      });
     } catch (err) {
       setEmpEditorResult({ ok: false, msg: 'เกิดข้อผิดพลาด: ' + err.message });
     }
@@ -3737,7 +4534,25 @@ function AdminView({ appointments, user }) {
     setEmpEditorSaving(true);
     setEmpEditorResult(null);
     try {
-      const updates = { name: empEditorEdit.name.trim(), department: empEditorEdit.department, role: empEditorEdit.role, active: empEditorEdit.active, updatedAt: Timestamp.now() };
+      const updates = {
+        name: empEditorEdit.name.trim(),
+        department: empEditorEdit.department,
+        role: empEditorEdit.role,
+        active: empEditorEdit.active,
+        updatedAt: Timestamp.now(),
+      };
+      // เพิ่ม approvalLevel เฉพาะ HOST (HEAD) — TBKK level 3-9
+      if (empEditorEdit.role === 'HOST') {
+        const lv = Number(empEditorEdit.approvalLevel || 0);
+        if (lv >= 3 && lv <= 9) {
+          updates.approvalLevel = lv;
+          updates.approvalLevelSetBy = 'admin';  // admin ตั้งเอง (ไม่ใช่ default)
+        } else if (lv === 0) {
+          // เคลียร์ level (กรณี admin เลือก "— ยังไม่ตั้งระดับ —")
+          updates.approvalLevel = 0;
+          updates.approvalLevelSetBy = 'cleared';
+        }
+      }
       if (empEditorNewPass) {
         if (empEditorNewPass.length < 6) { setEmpEditorResult({ ok: false, msg: 'รหัสผ่านต้องมีอย่างน้อย 6 ตัวอักษร' }); setEmpEditorSaving(false); return; }
         updates.passwordHash = await hashPassword(empEditorNewPass);
@@ -3799,6 +4614,28 @@ function AdminView({ appointments, user }) {
 
   // --- Admin Tab Navigation (organize sections into tabs) ---
   const [activeTab, setActiveTab] = useState('overview');
+
+  // 🚨 Auto-check SMTP health เมื่อเข้า Admin (เพื่อแสดง banner ถ้ายังไม่ตั้งค่า)
+  useEffect(() => {
+    if (!user) return;
+    let alive = true;
+    (async () => {
+      try {
+        const apiUrl = import.meta.env.VITE_EMAIL_API || 'http://localhost:3001';
+        const r = await fetch(`${apiUrl}/api/health`, { signal: AbortSignal.timeout(45000) });
+        if (!alive) return;
+        if (r.ok) {
+          const detail = await r.json().catch(() => ({}));
+          setSmtpServerHealth({ ok: true, detail });
+        } else {
+          setSmtpServerHealth({ ok: false, detail: 'Server ตอบ HTTP ' + r.status });
+        }
+      } catch (err) {
+        if (alive) setSmtpServerHealth({ ok: false, detail: err.message || 'ติดต่อ server ไม่ได้' });
+      }
+    })();
+    return () => { alive = false; };
+  }, [user]);
 
   // Load equipment requests
   useEffect(() => {
@@ -4478,7 +5315,13 @@ function AdminView({ appointments, user }) {
       const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'users', newUserForm.id.trim().toUpperCase());
       await setDoc(docRef, {
         name: newUserForm.name.trim(),
-        department: newUserForm.department,
+        displayName: newUserForm.name.trim(),
+        email: (newUserForm.email || '').trim(),
+        company: newUserForm.company || '',
+        division: newUserForm.division || '',
+        department: newUserForm.department || '',
+        section: newUserForm.section || '',
+        position: newUserForm.position || '',
         role: newUserForm.role,
         passwordHash: hash,
         active: true,
@@ -4487,19 +5330,216 @@ function AdminView({ appointments, user }) {
       });
       alert('เพิ่มผู้ใช้สำเร็จ');
       setShowAddUserModal(false);
-      setNewUserForm({ id: '', name: '', department: DEPARTMENTS[0], role: 'EMPLOYEE' });
+      setNewUserForm({
+        id: '', name: '', email: '',
+        company: '', division: '', department: DEPARTMENTS[0], section: '', position: '',
+        role: 'EMPLOYEE',
+      });
     } catch (error) {
       console.error('Error adding user:', error);
       alert('เกิดข้อผิดพลาด: ' + error.message);
     }
   };
 
+  const handleImportExcelFile = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = ''; // reset เพื่อให้เลือกไฟล์เดิมซ้ำได้
+    try {
+      const XLSX = await import('xlsx');
+      const buf = await file.arrayBuffer();
+      const wb = XLSX.read(buf, { type: 'array' });
+      const ws = wb.Sheets[wb.SheetNames[0]];
+      const rows = XLSX.utils.sheet_to_json(ws, { defval: '' });
+
+      // Helper: หาค่าใน row จากหลาย column name
+      const pick = (row, keys) => {
+        for (const k of keys) {
+          for (const rk of Object.keys(row)) {
+            if (rk.toString().trim().toLowerCase() === k.toLowerCase()) {
+              const v = row[rk];
+              if (v !== null && v !== undefined && v.toString().trim() !== '') return v.toString().trim();
+            }
+          }
+        }
+        return '';
+      };
+
+      const updates = [];
+      const notFound = [];
+      const skipped = [];
+
+      for (const row of rows) {
+        const id = pick(row, ['ID', 'id', 'รหัส', 'รหัสพนักงาน', 'Employee ID', 'EmployeeID', 'Staff ID']).toUpperCase();
+        if (!id) { skipped.push(row); continue; }
+
+        const updateData = {};
+
+        // ชื่อไทย
+        const fnameT = pick(row, ['fnameT', 'ชื่อ (ไทย)', 'ชื่อไทย', 'First Name TH']);
+        const lnameT = pick(row, ['lnameT', 'นามสกุล (ไทย)', 'นามสกุลไทย', 'Last Name TH']);
+        const nameT = pick(row, ['name', 'ชื่อ-นามสกุล', 'ชื่อ', 'Name', 'ชื่อ-สกุล']);
+        if (fnameT) updateData.fnameT = fnameT;
+        if (lnameT) updateData.lnameT = lnameT;
+        if (nameT) {
+          updateData.name = nameT;
+          updateData.displayName = nameT;
+        } else if (fnameT || lnameT) {
+          const full = `${fnameT} ${lnameT}`.trim();
+          updateData.name = full;
+          updateData.displayName = full;
+        }
+
+        // ชื่ออังกฤษ
+        const fnameE = pick(row, ['fnameE', 'ชื่อ (อังกฤษ)', 'ชื่ออังกฤษ', 'First Name EN', 'First Name']);
+        const lnameE = pick(row, ['lnameE', 'นามสกุล (อังกฤษ)', 'นามสกุลอังกฤษ', 'Last Name EN', 'Last Name']);
+        const nameE = pick(row, ['nameE', 'nameEn', 'displayNameEn', 'Name EN', 'English Name', 'ชื่อ-นามสกุล (อังกฤษ)']);
+        if (fnameE) updateData.fnameE = fnameE;
+        if (lnameE) updateData.lnameE = lnameE;
+        if (nameE) updateData.displayNameEn = nameE;
+        else if (fnameE || lnameE) updateData.displayNameEn = `${fnameE} ${lnameE}`.trim();
+
+        // ข้อมูลอื่น
+        const dept = pick(row, ['แผนก', 'department', 'Department', 'Dept']);
+        if (dept) updateData.department = dept;
+
+        const email = pick(row, ['email', 'Email', 'อีเมล', 'อีเมล์', 'E-mail']);
+        if (email) updateData.email = email;
+
+        const company = pick(row, ['บริษัท', 'company', 'Company']);
+        if (company) updateData.company = company;
+
+        const division = pick(row, ['ฝ่าย', 'division', 'Division']);
+        if (division) updateData.division = division;
+
+        const section = pick(row, ['ส่วนงาน', 'section', 'sectionName', 'Section']);
+        if (section) updateData.section = section;
+
+        const position = pick(row, ['ตำแหน่ง', 'position', 'Position', 'Title']);
+        if (position) updateData.position = position;
+
+        const role = pick(row, ['Role', 'role']).toUpperCase();
+        if (role && ['EMPLOYEE','HOST','ADMIN','SECURITY','GUEST','GA'].includes(role)) {
+          updateData.role = role;
+        }
+
+        if (Object.keys(updateData).length === 0) { skipped.push(row); continue; }
+
+        const exists = allUsers.find(u => (u.docId || '').toUpperCase() === id);
+        if (exists) {
+          updates.push({ id, data: updateData, currentName: exists.name || exists.displayName || '-' });
+        } else {
+          notFound.push({ id, data: updateData });
+        }
+      }
+
+      setImportPreview({ updates, notFound, skipped, totalRows: rows.length });
+    } catch (err) {
+      alert('อ่านไฟล์ไม่สำเร็จ: ' + err.message);
+    }
+  };
+
+  const commitImport = async () => {
+    if (!importPreview || !firebaseReady) return;
+    setImporting(true);
+    let success = 0;
+    const failed = [];
+    for (const u of importPreview.updates) {
+      try {
+        await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', u.id), {
+          ...u.data,
+          updatedAt: Timestamp.now(),
+        }, { merge: true });
+        success++;
+      } catch (err) {
+        failed.push({ id: u.id, err: err.message });
+      }
+    }
+    setImporting(false);
+    setImportResult({ success, failed, total: importPreview.updates.length });
+    setImportPreview(null);
+  };
+
+  const downloadImportTemplate = async () => {
+    const XLSX = await import('xlsx');
+    const data = [
+      { ID: '00004', 'ชื่อ-นามสกุล': 'ชาญณรงค์ ทองอยู่', 'ชื่อ (อังกฤษ)': 'Channarong', 'นามสกุล (อังกฤษ)': 'Thongyu', 'แผนก': 'ACCOUNTING & FINANCE', 'ตำแหน่ง': 'Manager', Email: 'channarong@tbkk.co.th', 'บริษัท': 'TBKK' },
+      { ID: 'W0937', 'ชื่อ-นามสกุล': 'อัมฤทธิ์ อันทิสุทธิ์', 'ชื่อ (อังกฤษ)': 'Amrit', 'นามสกุล (อังกฤษ)': 'Anthisut', 'แผนก': 'PRODUCTION 1', 'ตำแหน่ง': 'Operator', Email: '', 'บริษัท': 'Win' },
+      { ID: 'S0313', 'ชื่อ-นามสกุล': 'วันชนะ พระสุริยะทุ่ง', 'ชื่อ (อังกฤษ)': 'Wanchana', 'นามสกุล (อังกฤษ)': 'Phrasuriya', 'แผนก': 'SUPPLY CHAIN MANAGEMENT', 'ตำแหน่ง': 'Officer', Email: '', 'บริษัท': 'STU_K' },
+    ];
+    const ws = XLSX.utils.json_to_sheet(data);
+    ws['!cols'] = [
+      { wch: 12 }, { wch: 25 }, { wch: 15 }, { wch: 18 }, { wch: 25 }, { wch: 18 }, { wch: 28 }, { wch: 10 },
+    ];
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Users');
+    XLSX.writeFile(wb, 'TBK_Users_Template.xlsx');
+  };
+
+  const handleEditUser = (u) => {
+    setEditingUser(u);
+    setEditUserForm({
+      name: u.name || u.displayName || '',
+      email: u.email || '',
+      company: u.company || '',
+      division: u.division || '',
+      department: u.department || '',
+      section: u.section || '',
+      position: u.position || '',
+      role: u.role || 'EMPLOYEE',
+    });
+  };
+
+  const handleSaveEditUser = async () => {
+    if (!firebaseReady || !user || !editingUser) return;
+    if (!editUserForm.name?.trim()) {
+      alert('กรุณากรอกชื่อ');
+      return;
+    }
+    try {
+      const docRef = doc(db, 'artifacts', appId, 'public', 'data', 'users', editingUser.docId);
+      await setDoc(docRef, {
+        name: editUserForm.name.trim(),
+        displayName: editUserForm.name.trim(),
+        email: (editUserForm.email || '').trim(),
+        company: editUserForm.company || '',
+        division: editUserForm.division || '',
+        department: editUserForm.department || '',
+        section: editUserForm.section || '',
+        position: editUserForm.position || '',
+        role: editUserForm.role || 'EMPLOYEE',
+        updatedAt: Timestamp.now(),
+      }, { merge: true });
+      alert('บันทึกข้อมูลสำเร็จ');
+      setEditingUser(null);
+      setEditUserForm({});
+    } catch (error) {
+      console.error('Error saving user:', error);
+      alert('เกิดข้อผิดพลาด: ' + error.message);
+    }
+  };
+
   // --- Filtered data ---
   const filteredUsers = allUsers.filter(u => {
-    if (!userSearch) return true;
-    const s = userSearch.toUpperCase();
-    return (u.docId || '').toUpperCase().includes(s) || (u.name || '').toUpperCase().includes(s);
+    // text search
+    if (userSearch) {
+      const s = userSearch.toUpperCase();
+      const idMatch = (u.docId || '').toUpperCase().includes(s);
+      const nameMatch = (u.name || u.displayName || '').toUpperCase().includes(s);
+      if (!idMatch && !nameMatch) return false;
+    }
+    // dropdown filters
+    if (filterCompany && (u.company || '') !== filterCompany) return false;
+    if (filterDivision && (u.division || '') !== filterDivision) return false;
+    if (filterDepartment && (u.department || '') !== filterDepartment) return false;
+    if (filterSection && (u.section || '') !== filterSection) return false;
+    if (filterPosition && (u.position || '') !== filterPosition) return false;
+    return true;
   });
+  const hasActiveFilter = !!(filterCompany || filterDivision || filterDepartment || filterSection || filterPosition);
+  const clearFilters = () => {
+    setFilterCompany(''); setFilterDivision(''); setFilterDepartment(''); setFilterSection(''); setFilterPosition('');
+  };
 
   const filteredAuditLogs = auditLogs.filter(log => {
     let match = true;
@@ -4659,62 +5699,130 @@ function AdminView({ appointments, user }) {
     completed: appointments.filter(a => a.status === STATUS.COMPLETED).length
   };
 
+  // Tab definitions — ใช้ทั้ง sidebar (desktop) และ horizontal scroll (mobile)
+  const adminTabs = [
+    { id: 'overview',  label: 'ภาพรวม',     icon: LayoutDashboard, bg: 'bg-indigo-600',  text: 'text-indigo-600',  title: 'ภาพรวมระบบ',     desc: 'สรุปสถานะ, นัดหมายผู้มาติดต่อ, และทางลัดสู่ฟอร์มต่างๆ' },
+    { id: 'documents', label: 'เอกสาร',      icon: FileSearch,      bg: 'bg-emerald-600', text: 'text-emerald-600', title: 'จัดการเอกสาร',    desc: 'ดูและจัดการเอกสารอนุมัติ, ใบเบิกอุปกรณ์' },
+    { id: 'users',     label: 'ผู้ใช้งาน',    icon: Users,           bg: 'bg-blue-600',    text: 'text-blue-600',    title: 'จัดการผู้ใช้งาน',  desc: 'แก้ไขข้อมูลพนักงาน, เพิ่มผู้ใช้, ดูประวัติการใช้งาน' },
+    { id: 'stock',     label: 'สต็อก',       icon: Package,         bg: 'bg-amber-600',   text: 'text-amber-600',   title: 'จัดการสต็อก',     desc: 'จัดการสต็อกอุปกรณ์สำนักงาน' },
+    { id: 'fleet',     label: 'ยานพาหนะ',    icon: Car,             bg: 'bg-sky-600',     text: 'text-sky-600',     title: 'จัดการยานพาหนะ',  desc: 'จัดการรถบริษัทและการจอง' },
+    { id: 'security',  label: 'ความปลอดภัย', icon: Shield,          bg: 'bg-red-600',     text: 'text-red-600',     title: 'ความปลอดภัย',    desc: 'ตรวจสอบการโจมตี สแปม และการเข้าถึงที่ผิดปกติ' },
+    { id: 'system',    label: 'ตั้งค่าระบบ',  icon: Settings,        bg: 'bg-rose-600',    text: 'text-rose-600',    title: 'ตั้งค่าระบบ',     desc: 'ตั้งค่าอีเมล SMTP และเครื่องมือแก้ไขปัญหา' },
+  ];
+  const currentTab = adminTabs.find(t => t.id === activeTab) || adminTabs[0];
+
   return (
-    <div className="space-y-8 text-left animate-in fade-in duration-500 font-sans">
+    <div className="flex flex-col lg:flex-row gap-6 text-left animate-in fade-in duration-500 font-sans">
+
+      {/* Sidebar (Desktop only, lg+) */}
+      <aside className="hidden lg:block w-60 flex-shrink-0">
+        <div className="sticky top-6 bg-white border border-slate-200 rounded-[2rem] p-3 shadow-sm">
+          {/* Sidebar header */}
+          <div className="flex items-center gap-2 px-3 py-3 mb-2 border-b border-slate-100">
+            <div className="p-2 bg-gradient-to-br from-purple-600 to-indigo-700 rounded-lg shadow-md">
+              <Settings className="text-white w-4 h-4" />
+            </div>
+            <div>
+              <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Admin</p>
+              <p className="text-xs font-black text-slate-900">Dashboard</p>
+            </div>
+          </div>
+          {/* Vertical tab buttons */}
+          <nav className="space-y-1">
+            {adminTabs.map(t => {
+              const Icon = t.icon;
+              const active = activeTab === t.id;
+              return (
+                <button
+                  key={t.id}
+                  onClick={() => setActiveTab(t.id)}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-2xl font-bold text-sm transition-all active:scale-95 ${
+                    active
+                      ? `${t.bg} text-white shadow-md`
+                      : `text-slate-600 hover:bg-slate-50 ${t.text}`
+                  }`}
+                >
+                  <Icon size={18} className="flex-shrink-0" />
+                  <span className="flex-1 text-left">{t.label}</span>
+                  {active && <ChevronRight size={14} />}
+                </button>
+              );
+            })}
+          </nav>
+
+          {/* Quick Access Forms — open new tab */}
+          <div className="mt-4 pt-4 border-t border-slate-100">
+            <p className="text-[9px] font-black text-slate-400 uppercase tracking-widest px-3 mb-2">ฟอร์มต่างๆ</p>
+            <nav className="space-y-1">
+              {[
+                { key: 'vehicle',   url: '/vehicle.html',   label: 'ใบขออนุญาตใช้รถ',     icon: Car,          color: 'text-blue-600',   hover: 'hover:bg-blue-50' },
+                { key: 'drink',     url: '/drink.html',     label: 'อาหาร/เครื่องดื่ม',     icon: Coffee,       color: 'text-orange-600', hover: 'hover:bg-orange-50' },
+                { key: 'outing',    url: '/outing.html',    label: 'ขอออกข้างนอก',          icon: ExternalLink, color: 'text-red-600',    hover: 'hover:bg-red-50' },
+                { key: 'equipment', url: '/equipment.html', label: 'เบิกอุปกรณ์ในสำนักงาน', icon: Package,      color: 'text-purple-600', hover: 'hover:bg-purple-50' },
+                { key: 'goods',     url: '/goods.html',     label: 'นำของเข้า/ออก',         icon: Truck,        color: 'text-amber-600',  hover: 'hover:bg-amber-50' },
+              ].map((f, i) => {
+                const Icon = f.icon;
+                const enabled = formStatus[f.key] !== false;
+                return (
+                  <div key={i} className={`flex items-stretch rounded-xl overflow-hidden border ${enabled ? 'border-transparent' : 'border-slate-200 bg-slate-50/50'}`}>
+                    <button
+                      onClick={() => window.open(f.url, '_blank')}
+                      className={`flex-1 flex items-center gap-3 px-3 py-2 text-xs font-semibold transition-all active:scale-95 ${
+                        enabled ? `text-slate-600 ${f.hover}` : 'text-slate-400'
+                      }`}
+                      title="เปิดฟอร์ม (admin ทดสอบได้แม้ปิดอยู่)"
+                    >
+                      <Icon size={15} className={`flex-shrink-0 ${enabled ? f.color : 'text-slate-300'}`} />
+                      <span className="flex-1 text-left leading-tight">{f.label}</span>
+                      <ExternalLink size={11} className="text-slate-300 flex-shrink-0" />
+                    </button>
+                    {/* Toggle ON/OFF */}
+                    <button
+                      onClick={(e) => { e.stopPropagation(); toggleFormStatus(f.key); }}
+                      className={`px-2 text-[9px] font-black uppercase tracking-wider transition border-l ${
+                        enabled
+                          ? 'bg-emerald-50 text-emerald-700 hover:bg-emerald-100 border-emerald-200'
+                          : 'bg-slate-100 text-slate-500 hover:bg-slate-200 border-slate-200'
+                      }`}
+                      title={enabled ? 'คลิกเพื่อปิด' : 'คลิกเพื่อเปิด'}
+                    >
+                      {enabled ? 'ON' : 'OFF'}
+                    </button>
+                  </div>
+                );
+              })}
+            </nav>
+          </div>
+        </div>
+      </aside>
+
+      {/* Main content (right) */}
+      <div className="flex-1 min-w-0 space-y-6 lg:space-y-8">
+
       {/* Header */}
       <div className="flex flex-col gap-4 bg-white p-4 md:p-8 rounded-[2rem] md:rounded-[2.5rem] border border-slate-200 shadow-sm text-left">
         <div className="flex items-center gap-4">
-          <div className="p-3 bg-gradient-to-br from-purple-600 to-indigo-700 rounded-xl shadow-md shrink-0">
-            <Settings className="text-white w-6 h-6 md:w-8 md:h-8" />
+          <div className={`p-3 ${currentTab.bg} rounded-xl shadow-md shrink-0`}>
+            <currentTab.icon className="text-white w-6 h-6 md:w-8 md:h-8" />
           </div>
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 text-[10px] md:text-xs text-slate-400 font-black uppercase tracking-widest">
               <span>Admin Dashboard</span>
               <ChevronRight size={12} className="text-slate-300" />
-              <span className="text-indigo-600">
-                {activeTab === 'overview' && 'ภาพรวม'}
-                {activeTab === 'documents' && 'เอกสาร'}
-                {activeTab === 'users' && 'ผู้ใช้งาน'}
-                {activeTab === 'stock' && 'สต็อก'}
-                {activeTab === 'fleet' && 'ยานพาหนะ'}
-                {activeTab === 'security' && 'ความปลอดภัย'}
-                {activeTab === 'system' && 'ตั้งค่าระบบ'}
-              </span>
+              <span className={currentTab.text}>{currentTab.label}</span>
             </div>
             <h2 className="text-xl md:text-3xl font-black uppercase tracking-tight text-slate-900 font-sans mt-1">
-              {activeTab === 'overview' && 'ภาพรวมระบบ'}
-              {activeTab === 'documents' && 'จัดการเอกสาร'}
-              {activeTab === 'users' && 'จัดการผู้ใช้งาน'}
-              {activeTab === 'stock' && 'จัดการสต็อก'}
-              {activeTab === 'fleet' && 'จัดการยานพาหนะ'}
-              {activeTab === 'security' && 'ความปลอดภัย'}
-              {activeTab === 'system' && 'ตั้งค่าระบบ'}
+              {currentTab.title}
             </h2>
-            <p className="text-slate-400 text-xs md:text-sm mt-1">
-              {activeTab === 'overview' && 'สรุปสถานะ, นัดหมายผู้มาติดต่อ, และทางลัดสู่ฟอร์มต่างๆ'}
-              {activeTab === 'documents' && 'ดูและจัดการเอกสารอนุมัติ, ใบเบิกอุปกรณ์'}
-              {activeTab === 'users' && 'แก้ไขข้อมูลพนักงาน, เพิ่มผู้ใช้, ดูประวัติการใช้งาน'}
-              {activeTab === 'stock' && 'จัดการสต็อกอุปกรณ์สำนักงาน'}
-              {activeTab === 'security' && 'ตรวจสอบการโจมตี สแปม และการเข้าถึงที่ผิดปกติ'}
-              {activeTab === 'fleet' && 'จัดการรถบริษัทและการจอง'}
-              {activeTab === 'system' && 'ตั้งค่าอีเมล SMTP และเครื่องมือแก้ไขปัญหา'}
-            </p>
+            <p className="text-slate-400 text-xs md:text-sm mt-1">{currentTab.desc}</p>
           </div>
         </div>
       </div>
 
-      {/* Tab Navigation */}
-      <div className="bg-white border border-slate-200 rounded-[2rem] p-2 shadow-sm overflow-x-auto">
+      {/* Mobile-only horizontal Tab Navigation (lg และต่ำกว่า) */}
+      <div className="lg:hidden bg-white border border-slate-200 rounded-[2rem] p-2 shadow-sm overflow-x-auto">
         <div className="flex gap-1.5 min-w-max">
-          {[
-            { id: 'overview',  label: 'ภาพรวม',     icon: LayoutDashboard, bg: 'bg-indigo-600',  text: 'text-indigo-600'  },
-            { id: 'documents', label: 'เอกสาร',      icon: FileSearch,      bg: 'bg-emerald-600', text: 'text-emerald-600' },
-            { id: 'users',     label: 'ผู้ใช้งาน',    icon: Users,           bg: 'bg-blue-600',    text: 'text-blue-600'    },
-            { id: 'stock',     label: 'สต็อก',       icon: Package,         bg: 'bg-amber-600',   text: 'text-amber-600'   },
-            { id: 'fleet',     label: 'ยานพาหนะ',    icon: Car,             bg: 'bg-sky-600',     text: 'text-sky-600'     },
-            { id: 'security',  label: 'ความปลอดภัย', icon: Shield,          bg: 'bg-red-600',     text: 'text-red-600'     },
-            { id: 'system',    label: 'ตั้งค่าระบบ',  icon: Settings,        bg: 'bg-rose-600',    text: 'text-rose-600'    },
-          ].map(t => {
+          {adminTabs.map(t => {
             const Icon = t.icon;
             const active = activeTab === t.id;
             return (
@@ -4732,6 +5840,35 @@ function AdminView({ appointments, user }) {
           })}
         </div>
       </div>
+
+      {/* 🚨 SMTP Warning Banner — แสดงทุกแท็บถ้ายังไม่ตั้งค่า */}
+      {smtpServerHealth && (!smtpServerHealth.ok || !smtpServerHealth.detail?.hasSMTP) && activeTab !== 'system' && (
+        <div className="bg-gradient-to-r from-red-50 via-orange-50 to-yellow-50 border-2 border-red-200 rounded-2xl p-4 md:p-5 shadow-sm">
+          <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-3">
+            <div className="flex items-start gap-3 min-w-0">
+              <div className="text-3xl flex-shrink-0">🚨</div>
+              <div className="min-w-0">
+                <p className="text-sm md:text-base font-black text-red-900 leading-tight">
+                  SMTP ยังไม่ได้ตั้งค่า — Email ไม่ถูกส่งจริง!
+                </p>
+                <p className="text-xs md:text-sm text-red-700 mt-1 leading-snug">
+                  {smtpServerHealth.ok
+                    ? 'Server อยู่ใน Demo mode — ระบบแกล้งทำเป็นส่ง email แต่หัวหน้าไม่ได้รับจริง'
+                    : 'ติดต่อ Email server ไม่ได้ — กรุณาตรวจสอบ'}
+                  <br/>
+                  <span className="text-[11px] text-red-600">ตั้งค่าได้ที่ <b>Admin → ตั้งค่าระบบ → SMTP</b></span>
+                </p>
+              </div>
+            </div>
+            <button
+              onClick={() => { setActiveTab('system'); setShowSmtpSettings(true); }}
+              className="flex-shrink-0 bg-red-600 hover:bg-red-700 text-white px-5 py-3 rounded-xl font-black text-sm transition shadow-lg shadow-red-100 active:scale-95 flex items-center gap-2"
+            >
+              <Mail size={16} /> ตั้งค่า SMTP เลย
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Statistics (Overview only) */}
       {activeTab === 'overview' && (
@@ -4848,6 +5985,35 @@ function AdminView({ appointments, user }) {
                   {['EMPLOYEE','HOST','SECURITY','ADMIN'].map(r => <option key={r} value={r}>{r}</option>)}
                 </select>
               </div>
+              {/* Approval Level — เฉพาะ HOST/HEAD (ระบบ TBKK inverted: เลขน้อย = สูง) */}
+              {empEditorEdit.role === 'HOST' && (
+                <div>
+                  <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">
+                    ระดับอนุมัติ (TBKK Level)
+                    {empEditorEdit.approvalLevelSetBy === 'auto' && (
+                      <span className="ml-2 inline-block text-[9px] font-black px-1.5 py-0.5 bg-amber-100 text-amber-800 rounded normal-case">⚠ default</span>
+                    )}
+                  </label>
+                  <select
+                    className="w-full bg-white border border-slate-300 rounded-xl py-2.5 px-4 text-slate-900 focus:ring-4 focus:ring-amber-100 focus:border-amber-500 outline-none transition-all"
+                    value={empEditorEdit.approvalLevel || 0}
+                    onChange={(e) => setEmpEditorEdit({ ...empEditorEdit, approvalLevel: Number(e.target.value) })}
+                  >
+                    <option value={0}>— ยังไม่ตั้งระดับ —</option>
+                    <option value={3}>3 — GM (ผู้จัดการทั่วไป) ⬆ สูงสุด</option>
+                    <option value={4}>4 — Asst. GM (ผู้ช่วย ผจ.ทั่วไป)</option>
+                    <option value={5}>5 — ผู้จัดการฝ่าย</option>
+                    <option value={6}>6 — ผู้ช่วยผู้จัดการฝ่าย</option>
+                    <option value={7}>7 — หัวหน้าแผนก</option>
+                    <option value={8}>8 — Supervisor (หัวหน้างาน)</option>
+                    <option value={9}>9 — พนักงาน ⬇ ต่ำสุด</option>
+                  </select>
+                  <p className="text-[10px] text-slate-400 mt-1">
+                    ⚠️ TBKK กลับด้าน: <strong>เลขน้อย = ตำแหน่งสูง</strong><br/>
+                    ต้อง <strong>level ≤ 8 (Supervisor ขึ้นไป)</strong> ถึงจะอนุมัติใบขอใช้รถได้
+                  </p>
+                </div>
+              )}
               {/* Active toggle */}
               <div>
                 <label className="text-[10px] font-bold text-slate-500 uppercase block mb-1">สถานะบัญชี</label>
@@ -4886,67 +6052,7 @@ function AdminView({ appointments, user }) {
       </div>
       )}
 
-      {/* Quick Access to Forms (Overview tab) */}
-      {activeTab === 'overview' && (
-      <div className="bg-white border border-slate-200 p-8 rounded-[2.5rem] shadow-sm">
-        <h3 className="text-xl font-black text-slate-900 uppercase tracking-tight mb-6 flex items-center gap-3">
-          <Settings size={24} className="text-purple-600" />
-          จัดการฟอร์มต่างๆ
-        </h3>
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
-          <button
-            onClick={() => window.open('/vehicle.html', '_blank')}
-            className="flex flex-col items-center gap-3 bg-white border border-slate-200 p-6 rounded-[1.8rem] hover:border-blue-600 hover:shadow-lg transition-all active:scale-95 group"
-          >
-            <div className="p-4 bg-slate-50 rounded-2xl group-hover:scale-110 transition-transform">
-              <Car className="text-blue-600 w-6 h-6" />
-            </div>
-            <p className="font-black text-slate-700 uppercase tracking-widest text-[10px] text-center leading-tight">แบบฟอร์มใบขอ<br/>อนุญาตใช้รถของบริษัท</p>
-          </button>
-          <button
-            onClick={() => window.open('/drink.html', '_blank')}
-            className="flex flex-col items-center gap-3 bg-white border border-slate-200 p-6 rounded-[1.8rem] hover:border-orange-600 hover:shadow-lg transition-all active:scale-95 group"
-          >
-            <div className="p-4 bg-slate-50 rounded-2xl group-hover:scale-110 transition-transform flex gap-1">
-              <Utensils className="text-orange-600 w-6 h-6" />
-              <Coffee className="text-emerald-600 w-6 h-6" />
-            </div>
-            <p className="font-black text-slate-700 uppercase tracking-widest text-[10px] text-center leading-tight">แบบฟอร์มขออาหาร<br/>และเครื่องดื่มบริษัท</p>
-          </button>
-          <button
-            onClick={() => window.open('/outing.html', '_blank')}
-            className="flex flex-col items-center gap-3 bg-white border border-slate-200 p-6 rounded-[1.8rem] hover:border-red-600 hover:shadow-lg transition-all active:scale-95 group"
-          >
-            <div className="p-4 bg-slate-50 rounded-2xl group-hover:scale-110 transition-transform">
-              <ExternalLink className="text-red-600 w-6 h-6" />
-            </div>
-            <p className="font-black text-slate-700 uppercase tracking-widest text-[10px] text-center">ขอออกข้างนอก</p>
-          </button>
-          <button
-            onClick={() => {
-              setActiveTab('documents');
-              setShowEquipmentSection(true);
-            }}
-            className="flex flex-col items-center gap-3 bg-white border border-slate-200 p-6 rounded-[1.8rem] hover:border-purple-600 hover:shadow-lg transition-all active:scale-95 group"
-          >
-            <div className="p-4 bg-slate-50 rounded-2xl group-hover:scale-110 transition-transform">
-              <Package className="text-purple-600 w-6 h-6" />
-            </div>
-            <p className="font-black text-slate-700 uppercase tracking-widest text-[10px] text-center">เบิกอุปกรณ์ในสำนักงาน</p>
-            <span className="text-xs text-purple-600 font-bold">({equipmentRequests.length})</span>
-          </button>
-          <button
-            onClick={() => window.open('/goods.html', '_blank')}
-            className="flex flex-col items-center gap-3 bg-white border border-slate-200 p-6 rounded-[1.8rem] hover:border-amber-600 hover:shadow-lg transition-all active:scale-95 group"
-          >
-            <div className="p-4 bg-slate-50 rounded-2xl group-hover:scale-110 transition-transform">
-              <Truck className="text-amber-600 w-6 h-6" />
-            </div>
-            <p className="font-black text-slate-700 uppercase tracking-widest text-[10px] text-center">นำของเข้า / ของออก</p>
-          </button>
-        </div>
-      </div>
-      )}
+      {/* Quick Access to Forms — moved to sidebar */}
 
       {/* Equipment Requests Header (Documents tab) */}
       {activeTab === 'documents' && (
@@ -5195,7 +6301,7 @@ function AdminView({ appointments, user }) {
 
       {activeTab === 'users' && showUserManagement && (
         <div className="bg-white border border-slate-200 rounded-[2.5rem] overflow-hidden shadow-sm">
-          <div className="p-8 border-b border-slate-100 bg-slate-50/50">
+          <div className="p-8 border-b border-slate-100 bg-slate-50/50 space-y-4">
             <div className="flex flex-col md:flex-row gap-4 items-end">
               <div className="relative flex-1">
                 <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-300" size={20} />
@@ -5209,12 +6315,16 @@ function AdminView({ appointments, user }) {
               <button
                 onClick={async () => {
                   const { exportToExcel } = await import('./exportExcel');
-                  exportToExcel(allUsers, [
+                  exportToExcel(filteredUsers, [
                     { label: 'รหัสพนักงาน (Login)', value: (r) => r.docId || r.id || '' },
                     { label: 'ชื่อ-สกุล', value: (r) => r.displayName || r.name || '' },
                     { key: 'role', label: 'Role' },
                     { key: 'roleType', label: 'RoleType' },
+                    { key: 'company', label: 'บริษัท' },
+                    { key: 'division', label: 'ฝ่าย' },
                     { key: 'department', label: 'แผนก' },
+                    { key: 'section', label: 'ส่วนงาน' },
+                    { key: 'position', label: 'ตำแหน่ง' },
                     { key: 'email', label: 'Email' },
                     { label: 'สถานะ', value: (r) => r.active === false ? 'ปิด' : 'ใช้งาน' },
                   ], 'TBK_Users');
@@ -5224,11 +6334,164 @@ function AdminView({ appointments, user }) {
                 📊 Export Excel
               </button>
               <button
+                onClick={downloadImportTemplate}
+                className="bg-slate-100 hover:bg-slate-200 text-slate-700 px-4 py-3 rounded-2xl font-black text-xs transition flex items-center gap-2 shadow border border-slate-200 active:scale-95"
+                title="ดาวน์โหลด Template Excel"
+              >
+                📋 Template
+              </button>
+              <button
+                onClick={() => importFileRef.current?.click()}
+                className="bg-violet-600 hover:bg-violet-700 text-white px-5 py-3 rounded-2xl font-black text-xs transition flex items-center gap-2 shadow-lg active:scale-95"
+              >
+                📥 Import Excel
+              </button>
+              <input
+                ref={importFileRef}
+                type="file"
+                accept=".xlsx,.xls,.csv"
+                className="hidden"
+                onChange={handleImportExcelFile}
+              />
+              <button
                 onClick={() => setShowAddUserModal(true)}
                 className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-2xl font-black text-xs transition flex items-center gap-2 shadow-lg active:scale-95"
               >
                 <UserPlus size={16} /> เพิ่มผู้ใช้ใหม่
               </button>
+            </div>
+
+            {/* Filter row — purple gradient (5 dropdowns + clear) */}
+            <div className="p-3 rounded-2xl bg-gradient-to-r from-indigo-500 via-violet-500 to-purple-600 shadow-lg shadow-violet-200">
+              <div className="flex items-center justify-between mb-2">
+                <p className="text-xs font-black text-white uppercase tracking-widest flex items-center gap-2">
+                  <Users size={14} /> Filter — กรองโดยโครงสร้างองค์กร
+                </p>
+                {hasActiveFilter && (
+                  <button
+                    onClick={clearFilters}
+                    className="text-[10px] font-bold text-white bg-white/20 hover:bg-white/30 px-3 py-1 rounded-full transition flex items-center gap-1"
+                  >
+                    <X size={12} /> ล้าง Filter
+                  </button>
+                )}
+              </div>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-2">
+                <select
+                  className="w-full bg-white border border-white/30 rounded-full py-2.5 px-4 text-slate-900 focus:ring-2 focus:ring-white/50 outline-none text-xs font-semibold shadow-md cursor-pointer hover:bg-violet-50 transition"
+                  value={filterCompany}
+                  onChange={(e) => setFilterCompany(e.target.value)}
+                >
+                  <option value="">เลือกบริษัท (ทั้งหมด)</option>
+                  {COMPANIES.map(c => <option key={c} value={c}>{c}</option>)}
+                </select>
+                <select
+                  className="w-full bg-white border border-white/30 rounded-full py-2.5 px-4 text-slate-900 focus:ring-2 focus:ring-white/50 outline-none text-xs font-semibold shadow-md cursor-pointer hover:bg-violet-50 transition"
+                  value={filterDivision}
+                  onChange={(e) => setFilterDivision(e.target.value)}
+                >
+                  <option value="">เลือกฝ่าย (ทั้งหมด)</option>
+                  {DIVISIONS.map(d => <option key={d} value={d}>{d}</option>)}
+                </select>
+                <select
+                  className="w-full bg-white border border-white/30 rounded-full py-2.5 px-4 text-slate-900 focus:ring-2 focus:ring-white/50 outline-none text-xs font-semibold shadow-md cursor-pointer hover:bg-violet-50 transition"
+                  value={filterDepartment}
+                  onChange={(e) => setFilterDepartment(e.target.value)}
+                >
+                  <option value="">เลือกแผนก (ทั้งหมด)</option>
+                  {DEPARTMENT_LIST.map(d => <option key={d} value={d}>{d}</option>)}
+                </select>
+                <select
+                  className="w-full bg-white border border-white/30 rounded-full py-2.5 px-4 text-slate-900 focus:ring-2 focus:ring-white/50 outline-none text-xs font-semibold shadow-md cursor-pointer hover:bg-violet-50 transition"
+                  value={filterSection}
+                  onChange={(e) => setFilterSection(e.target.value)}
+                >
+                  <option value="">เลือกส่วนงาน (ทั้งหมด)</option>
+                  {SECTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+                </select>
+                <select
+                  className="w-full bg-white border border-white/30 rounded-full py-2.5 px-4 text-slate-900 focus:ring-2 focus:ring-white/50 outline-none text-xs font-semibold shadow-md cursor-pointer hover:bg-violet-50 transition"
+                  value={filterPosition}
+                  onChange={(e) => setFilterPosition(e.target.value)}
+                >
+                  <option value="">เลือกตำแหน่ง (ทั้งหมด)</option>
+                  {POSITIONS.map(p => <option key={p} value={p}>{p}</option>)}
+                </select>
+              </div>
+
+              {/* 👨‍💼 หัวหน้าของแผนกที่เลือก — แสดงเมื่อมี filterDepartment */}
+              {filterDepartment && (() => {
+                const norm = (s) => (s || '').toString().toUpperCase().replace(/[^A-Z0-9ก-๙]/g, '');
+                const targetN = norm(filterDepartment);
+                const targetShort = targetN.split(/[\s()]/).filter(Boolean)[0];
+                const heads = allUsers.filter(u => {
+                  if (u.active === false) return false;
+                  if (u.roleType !== 'HEAD') return false;
+                  const lv = Number(u.approvalLevel || 0);
+                  if (lv < 3 || lv > 8) return false;  // Lv.3-8 (GM ถึง Supervisor)
+                  const ud = norm(u.department);
+                  if (ud === targetN) return true;
+                  if (targetShort && (ud.startsWith(targetShort) || targetN.startsWith(ud.split(/[\s()]/)[0]))) return true;
+                  if ((targetShort === 'EEE' && ud.startsWith('EMPLOYEEEXPERIENCE')) ||
+                      (ud === 'EEE' && targetN.startsWith('EMPLOYEEEXPERIENCE'))) return true;
+                  return false;
+                }).sort((a, b) => (Number(a.approvalLevel) || 99) - (Number(b.approvalLevel) || 99));
+
+                const lvLabel = (lv) => ({2:'Director',3:'GM',4:'Asst.GM',5:'ผจ.ฝ่าย',6:'ผช.ผจ.ฝ่าย',7:'หัวหน้าแผนก',8:'Supervisor'})[lv] || `Lv.${lv}`;
+                const lvColor = (lv) => ({
+                  2: 'bg-red-100 text-red-800 border-red-300',
+                  3: 'bg-orange-100 text-orange-800 border-orange-300',
+                  4: 'bg-amber-100 text-amber-800 border-amber-300',
+                  5: 'bg-yellow-100 text-yellow-800 border-yellow-300',
+                  6: 'bg-lime-100 text-lime-800 border-lime-300',
+                  7: 'bg-emerald-100 text-emerald-800 border-emerald-300',
+                  8: 'bg-cyan-100 text-cyan-800 border-cyan-300',
+                })[lv] || 'bg-slate-100 text-slate-700 border-slate-300';
+
+                return (
+                  <div className="mt-3 p-3 bg-white/95 backdrop-blur rounded-xl border-2 border-white/40">
+                    <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+                      <p className="text-[11px] font-black text-violet-700 uppercase tracking-widest flex items-center gap-2">
+                        👨‍💼 หัวหน้าแผนกนี้ ({heads.length} คน) — ระบบจะส่ง email อนุมัติให้ทุกคน
+                      </p>
+                      {heads.length > 1 && (
+                        <span className="text-[10px] font-bold text-slate-500 bg-slate-100 px-2 py-1 rounded-full">
+                          ⚡ ใครเซ็นก่อนชนะ (first-approve-wins)
+                        </span>
+                      )}
+                    </div>
+
+                    {heads.length === 0 ? (
+                      <div className="bg-red-50 border-2 border-red-200 rounded-lg p-3 text-center">
+                        <p className="text-sm font-bold text-red-700">⚠️ ไม่มีหัวหน้า Lv.2-8 ในแผนกนี้</p>
+                        <p className="text-[11px] text-red-600 mt-1">เพิ่มหัวหน้าก่อน — ไม่งั้นพนักงานในแผนกนี้ส่งใบอนุมัติไม่ได้!</p>
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                        {heads.map(h => (
+                          <div key={h.id || h.docId} className="flex items-center gap-2 bg-gradient-to-br from-violet-50 to-indigo-50 rounded-lg p-2.5 border border-violet-100 hover:border-violet-300 transition">
+                            <span className={`flex-shrink-0 px-2 py-1 rounded-md border text-[10px] font-black ${lvColor(h.approvalLevel)}`}>
+                              Lv.{h.approvalLevel}
+                            </span>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-[12px] font-bold text-slate-900 truncate">{h.name || h.displayName || h.id}</p>
+                              <p className="text-[10px] text-slate-500 truncate font-mono">{h.email || `#${h.id}`}</p>
+                              <p className="text-[9px] text-violet-600 font-bold">{lvLabel(h.approvalLevel)}</p>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Stats */}
+                    <div className="mt-2 pt-2 border-t border-slate-200 flex flex-wrap gap-3 text-[10px] text-slate-600">
+                      <span>👥 พนักงานในแผนก: <strong>{filteredUsers.filter(u => u.roleType !== 'HEAD' && u.role !== 'ADMIN' && u.role !== 'GA' && u.role !== 'SECURITY').length}</strong> คน</span>
+                      <span>👨‍💼 หัวหน้า: <strong>{heads.length}</strong> คน</span>
+                      <span>📧 มี email: <strong>{heads.filter(h => h.email).length}/{heads.length}</strong></span>
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           </div>
           <div className="overflow-x-auto">
@@ -5237,18 +6500,57 @@ function AdminView({ appointments, user }) {
                 <tr className="text-slate-400 text-[10px] uppercase tracking-[0.2em] border-b border-slate-100">
                   <th className="px-6 py-4 font-black">ID</th>
                   <th className="px-6 py-4 font-black">ชื่อ</th>
-                  <th className="px-6 py-4 font-black">แผนก</th>
+                  <th className="px-6 py-4 font-black">ตำแหน่ง / บริษัท</th>
                   <th className="px-6 py-4 font-black text-center">Role</th>
                   <th className="px-6 py-4 font-black text-center">สถานะ</th>
                   <th className="px-6 py-4 font-black text-right">ดำเนินการ</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50 font-sans text-left">
-                {filteredUsers.map((u) => {
-                  const loginId = (u.docId || u.id || '').toString();
-                  const isRandom = /^[a-z0-9]{5,}$/.test(loginId) && !loginId.includes('-') && !loginId.includes('_');
-                  return (
-                  <tr key={u.docId} className={`hover:bg-slate-50 group transition-colors font-sans ${u.active === false ? 'bg-red-50/50' : ''}`}>
+                {(() => {
+                  // Group users by department
+                  const groups = filteredUsers.reduce((acc, u) => {
+                    const dept = (u.department || 'ไม่ระบุแผนก / Unspecified').trim() || 'ไม่ระบุแผนก / Unspecified';
+                    if (!acc[dept]) acc[dept] = [];
+                    acc[dept].push(u);
+                    return acc;
+                  }, {});
+                  const sortedDepts = Object.keys(groups).sort((a, b) => {
+                    if (a === 'ไม่ระบุแผนก / Unspecified') return 1;
+                    if (b === 'ไม่ระบุแผนก / Unspecified') return -1;
+                    return a.localeCompare(b, 'th');
+                  });
+                  return sortedDepts.flatMap((dept) => {
+                    const usersInDept = groups[dept];
+                    return [
+                      <tr key={`hdr-${dept}`} className="bg-gradient-to-r from-indigo-600 via-violet-600 to-purple-600">
+                        <td colSpan={6} className="px-6 py-3.5">
+                          <div className="flex items-center gap-3">
+                            <span className="text-lg">📂</span>
+                            <span className="text-base font-black text-white uppercase tracking-widest drop-shadow">{dept}</span>
+                            <span className="text-[11px] font-black text-violet-700 bg-white px-2.5 py-1 rounded-full shadow-sm">
+                              {usersInDept.length} คน
+                            </span>
+                            <span className="ml-auto flex gap-2 text-[10px] font-black">
+                              <span className="text-emerald-100 bg-emerald-700/40 backdrop-blur px-2 py-0.5 rounded-full border border-emerald-400/30">
+                                ✓ Active {usersInDept.filter(x => x.active !== false).length}
+                              </span>
+                              {usersInDept.filter(x => x.active === false).length > 0 && (
+                                <span className="text-red-100 bg-red-700/40 backdrop-blur px-2 py-0.5 rounded-full border border-red-400/30">
+                                  ✕ Inactive {usersInDept.filter(x => x.active === false).length}
+                                </span>
+                              )}
+                            </span>
+                          </div>
+                        </td>
+                      </tr>,
+                      ...usersInDept.map((u) => {
+                        const loginId = (u.docId || u.id || '').toString();
+                        // Flag เฉพาะ ID ที่เป็นตัวพิมพ์เล็ก + เลข (สุ่มจริง เช่น mfx51, mo68r)
+                        // ไม่ flag เลขล้วน (00021), ตัวใหญ่+เลข (W0937, SD553), หรือมีขีด (EMP-EEE-01)
+                        const isRandom = /^[a-z][a-z0-9]{4,}$/.test(loginId);
+                        return (
+                          <tr key={u.docId} className={`hover:bg-slate-50 group transition-colors font-sans ${u.active === false ? 'bg-red-50/50' : ''}`}>
                     <td className="px-6 py-4">
                       <span className={`text-sm font-mono font-black uppercase ${isRandom ? 'text-red-500' : 'text-slate-700'}`}>{loginId}</span>
                       {isRandom && (
@@ -5259,7 +6561,14 @@ function AdminView({ appointments, user }) {
                       <span className="text-sm font-bold text-slate-900">{u.name || '-'}</span>
                     </td>
                     <td className="px-6 py-4">
-                      <span className="text-sm text-slate-600">{u.department || '-'}</span>
+                      <div className="flex flex-col gap-0.5">
+                        <span className="text-sm text-slate-700 font-medium">{u.position || <span className="text-slate-300 italic font-normal">— ไม่ระบุตำแหน่ง —</span>}</span>
+                        {u.company && (
+                          <span className="text-[10px] uppercase tracking-wider font-bold text-slate-400">
+                            {u.company === 'TBKK' ? '🏭' : u.company === 'Win' ? '🏢' : u.company === 'STU_K' ? '🏬' : '🏛'} {u.company}
+                          </span>
+                        )}
+                      </div>
                     </td>
                     <td className="px-6 py-4 text-center">
                       <span className="bg-purple-50 text-purple-700 font-black py-1 px-3 rounded-lg border border-purple-200 text-xs">
@@ -5279,6 +6588,13 @@ function AdminView({ appointments, user }) {
                     </td>
                     <td className="px-6 py-4 text-right">
                       <div className="flex justify-end gap-2">
+                        <button
+                          onClick={() => handleEditUser(u)}
+                          className="p-2 bg-blue-50 text-blue-600 rounded-xl border border-blue-200 hover:border-blue-600 transition-all shadow-sm active:scale-90"
+                          title="แก้ไขข้อมูล"
+                        >
+                          <Edit size={18} />
+                        </button>
                         <button
                           onClick={() => handleToggleUserActive(u)}
                           className={`p-2 rounded-xl border transition-all shadow-sm active:scale-90 ${
@@ -5300,8 +6616,11 @@ function AdminView({ appointments, user }) {
                       </div>
                     </td>
                   </tr>
-                  );
-                })}
+                        );
+                      }),
+                    ];
+                  });
+                })()}
                 {filteredUsers.length === 0 && (
                   <tr>
                     <td colSpan="6" className="px-6 py-12 text-center text-slate-400 font-sans">
@@ -5324,7 +6643,7 @@ function AdminView({ appointments, user }) {
       {/* Add User Modal */}
       {showAddUserModal && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setShowAddUserModal(false)}>
-          <div className="bg-white rounded-[2rem] p-8 w-full max-w-lg shadow-2xl" onClick={(e) => e.stopPropagation()}>
+          <div className="bg-white rounded-[2rem] p-6 md:p-8 w-full max-w-3xl max-h-[90vh] overflow-y-auto shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <div className="flex items-center justify-between mb-6">
               <h3 className="text-xl font-black text-slate-900 uppercase tracking-tight flex items-center gap-3">
                 <UserPlus size={24} className="text-blue-600" />
@@ -5335,50 +6654,121 @@ function AdminView({ appointments, user }) {
               </button>
             </div>
             <div className="space-y-4">
-              <div>
-                <label className="block text-xs font-black text-slate-500 uppercase tracking-widest mb-2">ID (รหัสพนักงาน)</label>
-                <input
-                  className="w-full bg-slate-50 border border-slate-200 rounded-2xl py-3 px-4 text-slate-900 uppercase font-mono focus:ring-4 focus:ring-blue-50 focus:border-blue-600 outline-none transition-all"
-                  value={newUserForm.id}
-                  onChange={(e) => setNewUserForm({ ...newUserForm, id: e.target.value })}
-                  placeholder="เช่น EMP001"
-                />
+              {/* แถวที่ 1: ID + Role */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-black text-slate-500 uppercase tracking-widest mb-1.5">ID (รหัสพนักงาน) *</label>
+                  <input
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl py-2.5 px-3 text-slate-900 uppercase font-mono focus:ring-4 focus:ring-blue-50 focus:border-blue-600 outline-none text-sm"
+                    value={newUserForm.id}
+                    onChange={(e) => {
+                      const id = e.target.value;
+                      const detected = getCompanyByStaffId(id);
+                      setNewUserForm(prev => ({
+                        ...prev,
+                        id,
+                        company: detected || prev.company,
+                      }));
+                    }}
+                    placeholder="เช่น 00004 (TBKK), W0937 (Win), EMP-EEE-01"
+                  />
+                  {newUserForm.id && getCompanyByStaffId(newUserForm.id) && (
+                    <p className="text-[10px] text-blue-600 mt-1">
+                      🏢 ตรวจพบ: <span className="font-bold">{getCompanyByStaffId(newUserForm.id)}</span> (auto-fill ในช่อง "เลือกบริษัท")
+                    </p>
+                  )}
+                </div>
+                <div>
+                  <label className="block text-xs font-black text-slate-500 uppercase tracking-widest mb-1.5">Role</label>
+                  <select
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl py-2.5 px-3 text-slate-900 focus:ring-4 focus:ring-blue-50 focus:border-blue-600 outline-none text-sm"
+                    value={newUserForm.role}
+                    onChange={(e) => setNewUserForm({ ...newUserForm, role: e.target.value })}
+                  >
+                    <option value="EMPLOYEE">EMPLOYEE</option>
+                    <option value="HOST">HOST</option>
+                    <option value="ADMIN">ADMIN</option>
+                    <option value="SECURITY">SECURITY</option>
+                    <option value="GUEST">GUEST</option>
+                  </select>
+                </div>
               </div>
-              <div>
-                <label className="block text-xs font-black text-slate-500 uppercase tracking-widest mb-2">ชื่อ</label>
-                <input
-                  className="w-full bg-slate-50 border border-slate-200 rounded-2xl py-3 px-4 text-slate-900 focus:ring-4 focus:ring-blue-50 focus:border-blue-600 outline-none transition-all"
-                  value={newUserForm.name}
-                  onChange={(e) => setNewUserForm({ ...newUserForm, name: e.target.value })}
-                  placeholder="ชื่อ-นามสกุล"
-                />
+
+              {/* แถวที่ 2: Name + Email */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-black text-slate-500 uppercase tracking-widest mb-1.5">ชื่อ-นามสกุล *</label>
+                  <input
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl py-2.5 px-3 text-slate-900 focus:ring-4 focus:ring-blue-50 focus:border-blue-600 outline-none text-sm"
+                    value={newUserForm.name}
+                    onChange={(e) => setNewUserForm({ ...newUserForm, name: e.target.value })}
+                    placeholder="ชื่อ-นามสกุล"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-black text-slate-500 uppercase tracking-widest mb-1.5">Email</label>
+                  <input
+                    type="email"
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl py-2.5 px-3 text-slate-900 focus:ring-4 focus:ring-blue-50 focus:border-blue-600 outline-none text-sm font-mono"
+                    value={newUserForm.email}
+                    onChange={(e) => setNewUserForm({ ...newUserForm, email: e.target.value })}
+                    placeholder="name@tbkk.co.th"
+                  />
+                </div>
               </div>
-              <div>
-                <label className="block text-xs font-black text-slate-500 uppercase tracking-widest mb-2">แผนก</label>
-                <select
-                  className="w-full bg-slate-50 border border-slate-200 rounded-2xl py-3 px-4 text-slate-900 focus:ring-4 focus:ring-blue-50 focus:border-blue-600 outline-none transition-all"
-                  value={newUserForm.department}
-                  onChange={(e) => setNewUserForm({ ...newUserForm, department: e.target.value })}
-                >
-                  {DEPARTMENTS.map(d => <option key={d} value={d}>{d}</option>)}
-                </select>
+
+              {/* แถวที่ 3: 5 dropdowns ของโครงสร้างองค์กร — purple gradient theme */}
+              <div className="p-4 rounded-2xl bg-gradient-to-r from-indigo-500 via-violet-500 to-purple-600 shadow-lg shadow-violet-200">
+                <p className="text-xs font-black text-white uppercase tracking-widest mb-3 flex items-center gap-2">
+                  <Users size={14} /> โครงสร้างองค์กร / Organization Structure
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-2">
+                  <select
+                    className="w-full bg-white border border-white/30 rounded-full py-2.5 px-4 text-slate-900 focus:ring-2 focus:ring-white/50 outline-none text-xs font-semibold shadow-md cursor-pointer hover:bg-violet-50 transition"
+                    value={newUserForm.company}
+                    onChange={(e) => setNewUserForm({ ...newUserForm, company: e.target.value })}
+                  >
+                    <option value="">เลือกบริษัท</option>
+                    {COMPANIES.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                  <select
+                    className="w-full bg-white border border-white/30 rounded-full py-2.5 px-4 text-slate-900 focus:ring-2 focus:ring-white/50 outline-none text-xs font-semibold shadow-md cursor-pointer hover:bg-violet-50 transition"
+                    value={newUserForm.division}
+                    onChange={(e) => setNewUserForm({ ...newUserForm, division: e.target.value })}
+                  >
+                    <option value="">เลือกฝ่าย</option>
+                    {DIVISIONS.map(d => <option key={d} value={d}>{d}</option>)}
+                  </select>
+                  <select
+                    className="w-full bg-white border border-white/30 rounded-full py-2.5 px-4 text-slate-900 focus:ring-2 focus:ring-white/50 outline-none text-xs font-semibold shadow-md cursor-pointer hover:bg-violet-50 transition"
+                    value={newUserForm.department}
+                    onChange={(e) => setNewUserForm({ ...newUserForm, department: e.target.value })}
+                  >
+                    <option value="">เลือกแผนก *</option>
+                    {DEPARTMENT_LIST.map(d => <option key={d} value={d}>{d}</option>)}
+                  </select>
+                  <select
+                    className="w-full bg-white border border-white/30 rounded-full py-2.5 px-4 text-slate-900 focus:ring-2 focus:ring-white/50 outline-none text-xs font-semibold shadow-md cursor-pointer hover:bg-violet-50 transition"
+                    value={newUserForm.section}
+                    onChange={(e) => setNewUserForm({ ...newUserForm, section: e.target.value })}
+                  >
+                    <option value="">เลือกส่วนงาน</option>
+                    {SECTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                  <select
+                    className="w-full bg-white border border-white/30 rounded-full py-2.5 px-4 text-slate-900 focus:ring-2 focus:ring-white/50 outline-none text-xs font-semibold shadow-md cursor-pointer hover:bg-violet-50 transition"
+                    value={newUserForm.position}
+                    onChange={(e) => setNewUserForm({ ...newUserForm, position: e.target.value })}
+                  >
+                    <option value="">เลือกตำแหน่ง</option>
+                    {POSITIONS.map(p => <option key={p} value={p}>{p}</option>)}
+                  </select>
+                </div>
+                <p className="text-[10px] text-white/80 mt-2">💡 คลิกที่ช่องเพื่อเลือกจาก dropdown</p>
               </div>
-              <div>
-                <label className="block text-xs font-black text-slate-500 uppercase tracking-widest mb-2">Role</label>
-                <select
-                  className="w-full bg-slate-50 border border-slate-200 rounded-2xl py-3 px-4 text-slate-900 focus:ring-4 focus:ring-blue-50 focus:border-blue-600 outline-none transition-all"
-                  value={newUserForm.role}
-                  onChange={(e) => setNewUserForm({ ...newUserForm, role: e.target.value })}
-                >
-                  <option value="EMPLOYEE">EMPLOYEE</option>
-                  <option value="HOST">HOST</option>
-                  <option value="ADMIN">ADMIN</option>
-                  <option value="SECURITY">SECURITY</option>
-                  <option value="GUEST">GUEST</option>
-                </select>
-              </div>
+
               <p className="text-xs text-slate-400">* รหัสผ่านเริ่มต้นจะถูกตั้งเป็น "1234"</p>
-              <div className="flex justify-end gap-3 pt-4">
+              <div className="flex justify-end gap-3 pt-2">
                 <button
                   onClick={() => setShowAddUserModal(false)}
                   className="px-6 py-3 text-slate-400 font-bold hover:text-slate-900 transition"
@@ -5393,6 +6783,263 @@ function AdminView({ appointments, user }) {
                 </button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit User Modal */}
+      {editingUser && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => setEditingUser(null)}>
+          <div className="bg-white rounded-[2rem] p-6 md:p-8 w-full max-w-3xl max-h-[90vh] overflow-y-auto shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-xl font-black text-slate-900 uppercase tracking-tight flex items-center gap-3">
+                <Edit size={24} className="text-amber-600" />
+                แก้ไขข้อมูลผู้ใช้
+              </h3>
+              <button onClick={() => setEditingUser(null)} className="p-2 hover:bg-slate-100 rounded-xl transition">
+                <X size={20} className="text-slate-400" />
+              </button>
+            </div>
+
+            {/* ID + role badge readonly */}
+            <div className="mb-4 p-3 rounded-xl bg-slate-50 border border-slate-200 flex items-center gap-3 flex-wrap">
+              <div>
+                <p className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">รหัสพนักงาน (Login)</p>
+                <p className="font-mono font-black text-slate-900">{editingUser.docId}</p>
+              </div>
+              <span className="text-slate-300">|</span>
+              <div>
+                <p className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">สถานะ</p>
+                <p className="text-xs font-bold">
+                  {editingUser.active === false
+                    ? <span className="text-red-600">⚠️ ปิดใช้งาน</span>
+                    : <span className="text-emerald-600">✓ Active</span>}
+                </p>
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              {/* ชื่อ + Role */}
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-black text-slate-500 uppercase tracking-widest mb-1.5">ชื่อ-นามสกุล *</label>
+                  <input
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl py-2.5 px-3 text-slate-900 focus:ring-4 focus:ring-amber-50 focus:border-amber-600 outline-none text-sm"
+                    value={editUserForm.name || ''}
+                    onChange={(e) => setEditUserForm({ ...editUserForm, name: e.target.value })}
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-black text-slate-500 uppercase tracking-widest mb-1.5">Role</label>
+                  <select
+                    className="w-full bg-slate-50 border border-slate-200 rounded-xl py-2.5 px-3 text-slate-900 focus:ring-4 focus:ring-amber-50 focus:border-amber-600 outline-none text-sm"
+                    value={editUserForm.role || 'EMPLOYEE'}
+                    onChange={(e) => setEditUserForm({ ...editUserForm, role: e.target.value })}
+                  >
+                    <option value="EMPLOYEE">EMPLOYEE</option>
+                    <option value="HOST">HOST</option>
+                    <option value="ADMIN">ADMIN</option>
+                    <option value="SECURITY">SECURITY</option>
+                    <option value="GUEST">GUEST</option>
+                  </select>
+                </div>
+              </div>
+
+              {/* Email */}
+              <div>
+                <label className="block text-xs font-black text-slate-500 uppercase tracking-widest mb-1.5">Email</label>
+                <input
+                  type="email"
+                  className="w-full bg-slate-50 border border-slate-200 rounded-xl py-2.5 px-3 text-slate-900 focus:ring-4 focus:ring-amber-50 focus:border-amber-600 outline-none text-sm font-mono"
+                  value={editUserForm.email || ''}
+                  onChange={(e) => setEditUserForm({ ...editUserForm, email: e.target.value })}
+                  placeholder="name@tbkk.co.th"
+                />
+              </div>
+
+              {/* 5 dropdowns ของโครงสร้างองค์กร — purple gradient */}
+              <div className="p-4 rounded-2xl bg-gradient-to-r from-indigo-500 via-violet-500 to-purple-600 shadow-lg shadow-violet-200">
+                <p className="text-xs font-black text-white uppercase tracking-widest mb-3 flex items-center gap-2">
+                  <Users size={14} /> โครงสร้างองค์กร / Organization Structure
+                </p>
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-2">
+                  <select className="w-full bg-white border border-white/30 rounded-full py-2.5 px-4 text-slate-900 focus:ring-2 focus:ring-white/50 outline-none text-xs font-semibold shadow-md cursor-pointer hover:bg-violet-50 transition"
+                    value={editUserForm.company || ''} onChange={(e) => setEditUserForm({ ...editUserForm, company: e.target.value })}>
+                    <option value="">เลือกบริษัท</option>
+                    {COMPANIES.map(c => <option key={c} value={c}>{c}</option>)}
+                  </select>
+                  <select className="w-full bg-white border border-white/30 rounded-full py-2.5 px-4 text-slate-900 focus:ring-2 focus:ring-white/50 outline-none text-xs font-semibold shadow-md cursor-pointer hover:bg-violet-50 transition"
+                    value={editUserForm.division || ''} onChange={(e) => setEditUserForm({ ...editUserForm, division: e.target.value })}>
+                    <option value="">เลือกฝ่าย</option>
+                    {DIVISIONS.map(d => <option key={d} value={d}>{d}</option>)}
+                  </select>
+                  <select className="w-full bg-white border border-white/30 rounded-full py-2.5 px-4 text-slate-900 focus:ring-2 focus:ring-white/50 outline-none text-xs font-semibold shadow-md cursor-pointer hover:bg-violet-50 transition"
+                    value={editUserForm.department || ''} onChange={(e) => setEditUserForm({ ...editUserForm, department: e.target.value })}>
+                    <option value="">เลือกแผนก *</option>
+                    {DEPARTMENT_LIST.map(d => <option key={d} value={d}>{d}</option>)}
+                  </select>
+                  <select className="w-full bg-white border border-white/30 rounded-full py-2.5 px-4 text-slate-900 focus:ring-2 focus:ring-white/50 outline-none text-xs font-semibold shadow-md cursor-pointer hover:bg-violet-50 transition"
+                    value={editUserForm.section || ''} onChange={(e) => setEditUserForm({ ...editUserForm, section: e.target.value })}>
+                    <option value="">เลือกส่วนงาน</option>
+                    {SECTIONS.map(s => <option key={s} value={s}>{s}</option>)}
+                  </select>
+                  <select className="w-full bg-white border border-white/30 rounded-full py-2.5 px-4 text-slate-900 focus:ring-2 focus:ring-white/50 outline-none text-xs font-semibold shadow-md cursor-pointer hover:bg-violet-50 transition"
+                    value={editUserForm.position || ''} onChange={(e) => setEditUserForm({ ...editUserForm, position: e.target.value })}>
+                    <option value="">เลือกตำแหน่ง</option>
+                    {POSITIONS.map(p => <option key={p} value={p}>{p}</option>)}
+                  </select>
+                </div>
+                <p className="text-[10px] text-white/80 mt-2">💡 คลิกที่ช่องเพื่อเลือกจาก dropdown</p>
+              </div>
+
+              <div className="flex justify-end gap-3 pt-2">
+                <button
+                  onClick={() => setEditingUser(null)}
+                  className="px-6 py-3 text-slate-400 font-bold hover:text-slate-900 transition"
+                >
+                  ยกเลิก
+                </button>
+                <button
+                  onClick={handleSaveEditUser}
+                  className="bg-amber-600 hover:bg-amber-700 text-white px-8 py-3 rounded-2xl font-black shadow-lg active:scale-95 flex items-center gap-2"
+                >
+                  <Save size={18} /> บันทึกการแก้ไข
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Import Preview Modal */}
+      {importPreview && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={() => !importing && setImportPreview(null)}>
+          <div className="bg-white rounded-[2rem] p-6 md:p-8 w-full max-w-3xl max-h-[90vh] overflow-y-auto shadow-2xl" onClick={(e) => e.stopPropagation()}>
+            <div className="flex items-center justify-between mb-5">
+              <h3 className="text-xl font-black text-slate-900 uppercase tracking-tight flex items-center gap-3">
+                📥 Preview การ Import Excel
+              </h3>
+              <button onClick={() => !importing && setImportPreview(null)} className="p-2 hover:bg-slate-100 rounded-xl transition">
+                <X size={20} className="text-slate-400" />
+              </button>
+            </div>
+
+            {/* สรุป */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-5">
+              <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200 text-center">
+                <p className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">ทั้งหมด</p>
+                <p className="text-2xl font-black text-slate-900">{importPreview.totalRows}</p>
+                <p className="text-[10px] text-slate-400">แถวใน Excel</p>
+              </div>
+              <div className="p-4 rounded-2xl bg-emerald-50 border border-emerald-200 text-center">
+                <p className="text-[10px] uppercase tracking-wider text-emerald-700 font-bold">จะอัปเดต</p>
+                <p className="text-2xl font-black text-emerald-700">{importPreview.updates.length}</p>
+                <p className="text-[10px] text-emerald-600">คน (พบใน DB)</p>
+              </div>
+              <div className="p-4 rounded-2xl bg-amber-50 border border-amber-200 text-center">
+                <p className="text-[10px] uppercase tracking-wider text-amber-700 font-bold">ไม่พบ</p>
+                <p className="text-2xl font-black text-amber-700">{importPreview.notFound.length}</p>
+                <p className="text-[10px] text-amber-600">ID ไม่ตรง DB</p>
+              </div>
+              <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200 text-center">
+                <p className="text-[10px] uppercase tracking-wider text-slate-500 font-bold">ข้าม</p>
+                <p className="text-2xl font-black text-slate-500">{importPreview.skipped.length}</p>
+                <p className="text-[10px] text-slate-400">แถวว่าง</p>
+              </div>
+            </div>
+
+            {/* รายการที่จะอัปเดต */}
+            {importPreview.updates.length > 0 && (
+              <div className="mb-4">
+                <p className="text-xs font-black text-emerald-700 uppercase tracking-widest mb-2">✓ จะอัปเดต ({importPreview.updates.length})</p>
+                <div className="border border-emerald-200 rounded-xl overflow-hidden max-h-64 overflow-y-auto">
+                  <table className="w-full text-xs">
+                    <thead className="bg-emerald-50 sticky top-0">
+                      <tr>
+                        <th className="px-3 py-2 text-left font-bold text-emerald-700">ID</th>
+                        <th className="px-3 py-2 text-left font-bold text-emerald-700">ปัจจุบัน</th>
+                        <th className="px-3 py-2 text-left font-bold text-emerald-700">ฟิลด์ที่จะอัปเดต</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-emerald-100">
+                      {importPreview.updates.slice(0, 50).map((u, i) => (
+                        <tr key={i} className="hover:bg-emerald-50/50">
+                          <td className="px-3 py-2 font-mono font-bold text-slate-900">{u.id}</td>
+                          <td className="px-3 py-2 text-slate-600">{u.currentName}</td>
+                          <td className="px-3 py-2 text-slate-700">
+                            <span className="text-[10px] text-slate-500">{Object.keys(u.data).join(', ')}</span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {importPreview.updates.length > 50 && (
+                    <div className="px-3 py-2 text-center text-[10px] text-emerald-600 bg-emerald-50">
+                      ... และอีก {importPreview.updates.length - 50} คน
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* รายการ ID ไม่พบ */}
+            {importPreview.notFound.length > 0 && (
+              <div className="mb-4">
+                <p className="text-xs font-black text-amber-700 uppercase tracking-widest mb-2">⚠️ ไม่พบใน DB ({importPreview.notFound.length})</p>
+                <div className="border border-amber-200 rounded-xl p-3 bg-amber-50/50 max-h-32 overflow-y-auto">
+                  <p className="text-[10px] text-amber-700 mb-1">ID ที่ไม่พบจะถูก<strong>ข้าม</strong>ไป (ไม่สร้างใหม่):</p>
+                  <p className="text-xs font-mono text-amber-800">
+                    {importPreview.notFound.slice(0, 30).map(n => n.id).join(', ')}
+                    {importPreview.notFound.length > 30 && ` ... และอีก ${importPreview.notFound.length - 30}`}
+                  </p>
+                </div>
+              </div>
+            )}
+
+            <div className="flex justify-end gap-3 pt-3 border-t border-slate-100">
+              <button
+                onClick={() => setImportPreview(null)}
+                disabled={importing}
+                className="px-6 py-3 text-slate-400 font-bold hover:text-slate-900 transition disabled:opacity-50"
+              >
+                ยกเลิก
+              </button>
+              <button
+                onClick={commitImport}
+                disabled={importing || importPreview.updates.length === 0}
+                className="bg-violet-600 hover:bg-violet-700 disabled:bg-slate-300 text-white px-8 py-3 rounded-2xl font-black shadow-lg active:scale-95 flex items-center gap-2"
+              >
+                {importing ? (
+                  <>
+                    <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                    กำลังอัปเดต...
+                  </>
+                ) : (
+                  <>✓ ยืนยันอัปเดต {importPreview.updates.length} คน</>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Import Result Toast */}
+      {importResult && (
+        <div className="fixed top-6 right-6 z-50 bg-white rounded-2xl shadow-2xl border border-emerald-200 p-4 max-w-sm">
+          <div className="flex items-start gap-3">
+            <div className="w-10 h-10 rounded-full bg-emerald-100 flex items-center justify-center text-2xl">✓</div>
+            <div className="flex-1">
+              <p className="font-black text-slate-900">Import สำเร็จ</p>
+              <p className="text-xs text-slate-600">
+                อัปเดต <span className="font-bold text-emerald-700">{importResult.success}</span> / {importResult.total} คน
+                {importResult.failed.length > 0 && (
+                  <span className="text-red-600 ml-2">· ผิดพลาด {importResult.failed.length}</span>
+                )}
+              </p>
+            </div>
+            <button onClick={() => setImportResult(null)} className="p-1 hover:bg-slate-100 rounded">
+              <X size={16} className="text-slate-400" />
+            </button>
           </div>
         </div>
       )}
@@ -6664,6 +8311,176 @@ function AdminView({ appointments, user }) {
         </div>
       </div>
       )}
+
+      {/* 🔑 Change Password Modal */}
+      {showChangePassword && (
+        <ChangePasswordModal
+          staffId={hostIdentity?.staffId}
+          displayName={hostIdentity?.name || hostIdentity?.displayName || hostIdentity?.staffId}
+          onClose={() => setShowChangePassword(false)}
+        />
+      )}
+      </div>
+    </div>
+  );
+}
+
+// 🔑 Change Password Modal Component
+function ChangePasswordModal({ staffId, displayName, onClose }) {
+  const [oldPassword, setOldPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [showOld, setShowOld] = useState(false);
+  const [showNew, setShowNew] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e?.preventDefault();
+    setError('');
+    if (!oldPassword) { setError('กรุณาใส่รหัสเก่า'); return; }
+    if (!newPassword) { setError('กรุณาใส่รหัสใหม่'); return; }
+    if (newPassword.length < 4) { setError('รหัสใหม่ต้องอย่างน้อย 4 ตัวอักษร'); return; }
+    if (newPassword !== confirmPassword) { setError('รหัสใหม่ไม่ตรงกัน — กรอกซ้ำให้ตรง'); return; }
+    if (newPassword === oldPassword) { setError('รหัสใหม่ต้องต่างจากรหัสเก่า'); return; }
+
+    setSubmitting(true);
+    try {
+      await changeMyPassword(staffId, oldPassword, newPassword);
+      setSuccess(true);
+      setTimeout(() => { onClose(); }, 2000);
+    } catch (err) {
+      setError(err?.message || 'เปลี่ยนรหัสผ่านล้มเหลว');
+      setSubmitting(false);
+    }
+  };
+
+  if (success) {
+    return (
+      <div className="fixed inset-0 z-[200] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4">
+        <div className="w-full max-w-md bg-white rounded-3xl shadow-2xl overflow-hidden text-center p-8">
+          <div className="text-6xl mb-3">✅</div>
+          <h3 className="text-xl font-black text-emerald-700 mb-2">เปลี่ยนรหัสผ่านสำเร็จ!</h3>
+          <p className="text-sm text-slate-500">ครั้งหน้า login ใช้รหัสใหม่</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="fixed inset-0 z-[200] bg-slate-900/60 backdrop-blur-sm flex items-center justify-center p-4" onClick={() => !submitting && onClose()}>
+      <div className="w-full max-w-md bg-white rounded-3xl shadow-2xl overflow-hidden" onClick={(e) => e.stopPropagation()}>
+        <div className="bg-gradient-to-br from-blue-600 to-indigo-600 text-white px-6 py-5 flex items-center justify-between">
+          <div>
+            <h3 className="text-lg font-black flex items-center gap-2">🔑 เปลี่ยนรหัสผ่าน</h3>
+            <p className="text-xs text-blue-100 mt-1">{displayName} · #{staffId}</p>
+          </div>
+          <button onClick={onClose} disabled={submitting} className="w-9 h-9 flex items-center justify-center rounded-xl bg-white/20 hover:bg-white/30 transition disabled:opacity-50">
+            <X size={20} />
+          </button>
+        </div>
+
+        <form onSubmit={handleSubmit} className="p-6 space-y-4">
+          {/* Old password */}
+          <div>
+            <label className="block text-xs font-bold text-slate-700 mb-1.5">🔐 รหัสผ่านเก่า</label>
+            <div className="relative">
+              <input
+                type={showOld ? 'text' : 'password'}
+                value={oldPassword}
+                onChange={(e) => setOldPassword(e.target.value)}
+                disabled={submitting}
+                placeholder="ใส่รหัสปัจจุบัน"
+                autoFocus
+                className="w-full px-3 py-2.5 pr-10 text-sm border-2 border-slate-200 rounded-xl focus:outline-none focus:border-blue-400 focus:ring-2 focus:ring-blue-100 disabled:bg-slate-50"
+              />
+              <button type="button" onClick={() => setShowOld(!showOld)} className="absolute right-2 top-1/2 -translate-y-1/2 px-2 py-1 text-xs text-slate-400 hover:text-slate-600">
+                {showOld ? '🙈' : '👁'}
+              </button>
+            </div>
+          </div>
+
+          {/* New password */}
+          <div>
+            <label className="block text-xs font-bold text-slate-700 mb-1.5">✨ รหัสผ่านใหม่ <span className="text-slate-400 font-normal">(อย่างน้อย 4 ตัว)</span></label>
+            <div className="relative">
+              <input
+                type={showNew ? 'text' : 'password'}
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
+                disabled={submitting}
+                placeholder="ใส่รหัสใหม่"
+                className="w-full px-3 py-2.5 pr-10 text-sm border-2 border-slate-200 rounded-xl focus:outline-none focus:border-emerald-400 focus:ring-2 focus:ring-emerald-100 disabled:bg-slate-50"
+              />
+              <button type="button" onClick={() => setShowNew(!showNew)} className="absolute right-2 top-1/2 -translate-y-1/2 px-2 py-1 text-xs text-slate-400 hover:text-slate-600">
+                {showNew ? '🙈' : '👁'}
+              </button>
+            </div>
+          </div>
+
+          {/* Confirm new password */}
+          <div>
+            <label className="block text-xs font-bold text-slate-700 mb-1.5">✓ ยืนยันรหัสผ่านใหม่</label>
+            <input
+              type={showNew ? 'text' : 'password'}
+              value={confirmPassword}
+              onChange={(e) => setConfirmPassword(e.target.value)}
+              disabled={submitting}
+              placeholder="กรอกรหัสใหม่อีกครั้ง"
+              className={`w-full px-3 py-2.5 text-sm border-2 rounded-xl focus:outline-none focus:ring-2 disabled:bg-slate-50 ${
+                confirmPassword && confirmPassword !== newPassword
+                  ? 'border-red-300 focus:border-red-400 focus:ring-red-100'
+                  : confirmPassword && confirmPassword === newPassword
+                  ? 'border-emerald-300 focus:border-emerald-400 focus:ring-emerald-100'
+                  : 'border-slate-200 focus:border-blue-400 focus:ring-blue-100'
+              }`}
+            />
+            {confirmPassword && confirmPassword !== newPassword && (
+              <p className="text-[11px] text-red-600 mt-1">⚠️ ไม่ตรงกัน</p>
+            )}
+            {confirmPassword && confirmPassword === newPassword && newPassword.length >= 4 && (
+              <p className="text-[11px] text-emerald-600 mt-1">✓ ตรงกัน</p>
+            )}
+          </div>
+
+          {/* Error */}
+          {error && (
+            <div className="bg-red-50 border-2 border-red-200 rounded-xl p-3">
+              <p className="text-sm font-bold text-red-700">❌ {error}</p>
+            </div>
+          )}
+
+          {/* Tips */}
+          <div className="bg-blue-50 border border-blue-200 rounded-xl p-3">
+            <p className="text-[11px] font-bold text-blue-800 mb-1">💡 คำแนะนำ:</p>
+            <ul className="text-[11px] text-blue-700 space-y-0.5 list-disc list-inside">
+              <li>อย่างน้อย 4 ตัวอักษร (แนะนำ 6+)</li>
+              <li>อย่าใช้ "1234", "0000", หรือเลขรหัสพนักงาน</li>
+              <li>จดจำให้แม่นๆ — ลืมแล้วต้องให้ admin reset</li>
+            </ul>
+          </div>
+
+          {/* Buttons */}
+          <div className="flex gap-2 pt-2">
+            <button
+              type="button"
+              onClick={onClose}
+              disabled={submitting}
+              className="flex-1 px-4 py-2.5 rounded-xl border-2 border-slate-200 text-slate-600 hover:bg-slate-50 text-sm font-bold disabled:opacity-50"
+            >
+              ยกเลิก
+            </button>
+            <button
+              type="submit"
+              disabled={submitting || !oldPassword || !newPassword || newPassword !== confirmPassword || newPassword.length < 4}
+              className="flex-[2] px-6 py-2.5 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 text-white text-sm font-black shadow-md hover:from-blue-700 hover:to-indigo-700 disabled:bg-slate-300 disabled:from-slate-300 disabled:to-slate-300 disabled:cursor-not-allowed"
+            >
+              {submitting ? '⏳ กำลังบันทึก...' : '🔑 เปลี่ยนรหัสผ่าน'}
+            </button>
+          </div>
+        </form>
+      </div>
     </div>
   );
 }

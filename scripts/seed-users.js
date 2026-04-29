@@ -88,17 +88,22 @@ async function main() {
   const testEmail = 'intern_attachai.k@tbkk.co.th';
   const eeeHeadEmail = 'sarayut_r@tbkk.co.th';
 
+  // Default approvalLevel = 7 (หัวหน้าแผนก — TBKK level system)
+  // ⚠️ TBKK level: เลขน้อย = ตำแหน่งสูง (3=GM, 9=พนักงาน, threshold = ≤ 8)
+  // admin ปรับใน Admin Panel ได้ทีหลัง
+  const HEAD_DEFAULTS = { approvalLevel: 7, approvalLevelSetBy: 'auto' };
+
   const users = [
     // Department heads
-    { id: 'HEAD-EEE', displayName: 'หัวหน้า EEE', role: 'HOST', roleType: 'HEAD', department: DEPARTMENTS[0], email: eeeHeadEmail },
-    { id: 'HEAD-SOC', displayName: 'หัวหน้า SOC', role: 'HOST', roleType: 'HEAD', department: DEPARTMENTS[1], email: testEmail },
-    { id: 'HEAD-HR', displayName: 'หัวหน้า HR', role: 'HOST', roleType: 'HEAD', department: DEPARTMENTS[2], email: testEmail },
-    { id: 'HEAD-IT', displayName: 'หัวหน้า IT', role: 'HOST', roleType: 'HEAD', department: DEPARTMENTS[3], email: testEmail },
-    { id: 'HEAD-PRD', displayName: 'หัวหน้า Production', role: 'HOST', roleType: 'HEAD', department: DEPARTMENTS[4], email: testEmail },
-    { id: 'HEAD-ACC', displayName: 'หัวหน้า Accounting', role: 'HOST', roleType: 'HEAD', department: DEPARTMENTS[5], email: testEmail },
-    { id: 'HEAD-SAL', displayName: 'หัวหน้า Sales', role: 'HOST', roleType: 'HEAD', department: DEPARTMENTS[6], email: testEmail },
-    { id: 'HEAD-MNT', displayName: 'หัวหน้า Maintenance', role: 'HOST', roleType: 'HEAD', department: DEPARTMENTS[7], email: testEmail },
-    { id: 'HEAD-SHOP', displayName: 'หัวหน้า Shop', role: 'HOST', roleType: 'HEAD', department: DEPARTMENTS[9], email: testEmail },
+    { id: 'HEAD-EEE', displayName: 'หัวหน้า EEE', role: 'HOST', roleType: 'HEAD', department: DEPARTMENTS[0], email: eeeHeadEmail, ...HEAD_DEFAULTS },
+    { id: 'HEAD-SOC', displayName: 'หัวหน้า SOC', role: 'HOST', roleType: 'HEAD', department: DEPARTMENTS[1], email: testEmail, ...HEAD_DEFAULTS },
+    { id: 'HEAD-HR', displayName: 'หัวหน้า HR', role: 'HOST', roleType: 'HEAD', department: DEPARTMENTS[2], email: testEmail, ...HEAD_DEFAULTS },
+    { id: 'HEAD-IT', displayName: 'หัวหน้า IT', role: 'HOST', roleType: 'HEAD', department: DEPARTMENTS[3], email: testEmail, ...HEAD_DEFAULTS },
+    { id: 'HEAD-PRD', displayName: 'หัวหน้า Production', role: 'HOST', roleType: 'HEAD', department: DEPARTMENTS[4], email: testEmail, ...HEAD_DEFAULTS },
+    { id: 'HEAD-ACC', displayName: 'หัวหน้า Accounting', role: 'HOST', roleType: 'HEAD', department: DEPARTMENTS[5], email: testEmail, ...HEAD_DEFAULTS },
+    { id: 'HEAD-SAL', displayName: 'หัวหน้า Sales', role: 'HOST', roleType: 'HEAD', department: DEPARTMENTS[6], email: testEmail, ...HEAD_DEFAULTS },
+    { id: 'HEAD-MNT', displayName: 'หัวหน้า Maintenance', role: 'HOST', roleType: 'HEAD', department: DEPARTMENTS[7], email: testEmail, ...HEAD_DEFAULTS },
+    { id: 'HEAD-SHOP', displayName: 'หัวหน้า Shop', role: 'HOST', roleType: 'HEAD', department: DEPARTMENTS[9], email: testEmail, ...HEAD_DEFAULTS },
     // Employees
     { id: 'EMP-EEE-01', displayName: 'พนักงาน EEE', role: 'EMPLOYEE', roleType: 'EMPLOYEE', department: DEPARTMENTS[0] },
     { id: 'EMP-SOC-01', displayName: 'พนักงาน SOC', role: 'EMPLOYEE', roleType: 'EMPLOYEE', department: DEPARTMENTS[1] },

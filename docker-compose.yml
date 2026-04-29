@@ -1,0 +1,47 @@
+# 🐳 Docker Compose — รันระบบทั้งหมดด้วยคำสั่งเดียว
+# วิธีใช้: docker-compose up -d
+# เปิดดูที่: http://localhost:3000
+
+version: '3.8'
+
+services:
+  tbkk-app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: tbkk-soc-system
+    restart: unless-stopped
+    ports:
+      - "3000:3000"  # Frontend (React)
+      - "3001:3001"  # Email server API
+    environment:
+      # === Firebase config (เชื่อม Firestore cloud) ===
+      - VITE_FIREBASE_API_KEY=${VITE_FIREBASE_API_KEY}
+      - VITE_FIREBASE_AUTH_DOMAIN=${VITE_FIREBASE_AUTH_DOMAIN}
+      - VITE_FIREBASE_PROJECT_ID=${VITE_FIREBASE_PROJECT_ID}
+      - VITE_FIREBASE_STORAGE_BUCKET=${VITE_FIREBASE_STORAGE_BUCKET}
+      - VITE_FIREBASE_MESSAGING_SENDER_ID=${VITE_FIREBASE_MESSAGING_SENDER_ID}
+      - VITE_FIREBASE_APP_ID=${VITE_FIREBASE_APP_ID}
+      - VITE_APP_ID=${VITE_APP_ID:-visitor-soc-001}
+
+      # === Email server config ===
+      - SMTP_HOST=${SMTP_HOST:-smtp.office365.com}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USER=${SMTP_USER}
+      - SMTP_PASS=${SMTP_PASS}
+      - SMTP_FROM=${SMTP_FROM:-no-reply@tbkk.co.th}
+
+      # === Public URL ===
+      - VITE_PUBLIC_URL=${VITE_PUBLIC_URL:-http://localhost:3000}
+      - VITE_EMAIL_API=${VITE_EMAIL_API:-http://localhost:3001}
+
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+    volumes:
+      # เก็บ logs ออกนอก container — ดู debug ง่าย
+      - ./logs:/var/log/tbkk

@@ -46,12 +46,12 @@ export const WORKFLOW_ROUTES = {
   GOODS_IN_OUT: { steps: 3, step1Label: 'Check (หัวหน้าแผนก)', step2: 'HR', step2Label: 'Approve (ผจก./HR/EEE)', step3: 'SECURITY', step3Label: 'รปภ. รับทราบ' },
   // ผู้มาติดต่อ: Prepare → Check(หัวหน้า) → Approve(HR/EEE) → รปภ.
   VISITOR: { steps: 3, step1Label: 'Check (หัวหน้าแผนก)', step2: 'HR', step2Label: 'Approve (ผจก./HR/EEE)', step3: 'SECURITY', step3Label: 'รปภ. รับทราบ' },
-  // สั่งเครื่องดื่ม: Prepare → GA รับออเดอร์ (ไม่ผ่านหัวหน้า)
-  DRINK_ORDER: { steps: 1, step1: 'GA', step1Label: 'GA รับออเดอร์', targetType: 'GA', sendShopImmediately: true },
-  // สั่งอาหาร: Prepare → GA รับออเดอร์ (ไม่ผ่านหัวหน้า)
-  FOOD_ORDER: { steps: 1, step1: 'GA', step1Label: 'GA รับออเดอร์', targetType: 'GA', sendShopImmediately: true },
-  // สั่งเครื่องดื่ม+อาหาร (รวมเป็นใบเดียว): Prepare → GA รับออเดอร์ (ไม่ผ่านหัวหน้า)
-  DRINK_FOOD_ORDER: { steps: 1, step1: 'GA', step1Label: 'GA รับออเดอร์', targetType: 'GA', sendShopImmediately: true },
+  // สั่งเครื่องดื่ม: Prepare → Check(หัวหน้า) → GA รับออเดอร์ (GA ส่งรูปทาง LINE ให้ร้าน)
+  DRINK_ORDER: { steps: 2, step1Label: 'Check (หัวหน้าแผนก)', step2: 'GA', step2Label: 'GA รับออเดอร์' },
+  // สั่งอาหาร: Prepare → Check(หัวหน้า) → GA รับออเดอร์ (GA ส่งรูปทาง LINE ให้ร้าน)
+  FOOD_ORDER: { steps: 2, step1Label: 'Check (หัวหน้าแผนก)', step2: 'GA', step2Label: 'GA รับออเดอร์' },
+  // สั่งเครื่องดื่ม+อาหาร: Prepare → Check(หัวหน้า) → GA รับออเดอร์
+  DRINK_FOOD_ORDER: { steps: 2, step1Label: 'Check (หัวหน้าแผนก)', step2: 'GA', step2Label: 'GA รับออเดอร์' },
   // เบิกอุปกรณ์: Prepare → Check(หัวหน้า) → จบ
   EQUIPMENT_REQUEST: { steps: 1, step1Label: 'Check (หัวหน้าแผนก)' },
 };
@@ -69,6 +69,39 @@ export const STEP_LABEL = {
   2: 'หัวหน้าแผนก HR',
   3: 'ร้านค้า / จัดซื้อ',
 };
+
+// --- Approval Level (ตามระบบ HR จริงของ TBKK: ระดับ 3-9) ---
+// ⚠️ TBKK กลับด้าน: เลขน้อย = ตำแหน่งสูง
+// 3 = GM (สูงสุด)         → 5 คนในบริษัท
+// 4 = Asst. GM            → 7 คน
+// 5 = ผู้จัดการฝ่าย       → 14 คน
+// 6 = ผู้ช่วยผู้จัดการฝ่าย  → 12 คน
+// 7 = หัวหน้าแผนก         → 10 คน
+// 8 = Supervisor (หัวหน้างาน) → 25 คน  ← ขั้นต่ำที่อนุมัติใบขอใช้รถได้
+// 9 = พนักงาน (ต่ำสุด)    → 804 คน
+export const VEHICLE_MAX_APPROVAL_LEVEL = 8; // <= 8 ถึงจะอนุมัติได้ (Supervisor)
+export const VEHICLE_MIN_APPROVAL_LEVEL = 3; // >= 3 (GM, Asst.GM, ...) — Lv.2 Director ไม่อนุมัติงานประจำ
+
+// Label สำหรับแสดงในหน้า admin / ApproverPicker (ตามระบบจริง TBKK)
+export const APPROVAL_LEVEL_LABELS = {
+  1: 'President (ประธานบริษัท)',
+  2: 'Director (ผู้อำนวยการ)',
+  3: 'GM (ผู้จัดการทั่วไป)',
+  4: 'Asst. GM (ผู้ช่วย ผจ.ทั่วไป)',
+  5: 'ผู้จัดการฝ่าย',
+  6: 'ผู้ช่วยผู้จัดการฝ่าย',
+  7: 'หัวหน้าแผนก',
+  8: 'Supervisor (หัวหน้างาน)',
+  9: 'พนักงาน',
+};
+
+// ตรวจว่า user มีสิทธิ์อนุมัติเอกสารประเภทนี้หรือไม่
+// Inverted: level น้อยกว่า = ตำแหน่งสูงกว่า → ใช้ <= ในการเช็คขั้นต่ำ
+export function canApproveVehicle(user) {
+  const level = Number(user?.approvalLevel || 0);
+  if (level < VEHICLE_MIN_APPROVAL_LEVEL) return false; // ไม่ได้ตั้ง level
+  return level <= VEHICLE_MAX_APPROVAL_LEVEL;
+}
 
 export const DEPT_ALIAS = {
   EEE: 'EEE',
@@ -94,5 +127,7 @@ export function resolveQueueDepartment(raw) {
   const n = normalizeDepartment(raw);
   if (!n) return 'Other (อื่นๆ)';
   const found = DEPARTMENTS.find((d) => normalizeDepartment(d) === n);
-  return found || 'Other (อื่นๆ)';
+  // ถ้าหาไม่เจอใน DEPARTMENTS list → คืนค่าดิบ ไม่ทับเป็น "Other"
+  // (กัน workflow ติดที่ Other เมื่อ dept ของ user ไม่ตรง canonical list)
+  return found || (raw || '').toString().trim() || 'Other (อื่นๆ)';
 }

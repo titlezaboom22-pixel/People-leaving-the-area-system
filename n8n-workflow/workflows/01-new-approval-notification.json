@@ -1,0 +1,271 @@
+{
+  "name": "TBKK SOC - New Approval Notification",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "soc-new-approval",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "11111111-1111-1111-1111-111111111111",
+      "name": "Webhook: New Approval",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [240, 400],
+      "webhookId": "soc-new-approval"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "id": "a1", "name": "documentId",     "value": "={{ $json.body.documentId }}",     "type": "string" },
+            { "id": "a2", "name": "documentType",   "value": "={{ $json.body.documentType }}",   "type": "string" },
+            { "id": "a3", "name": "requesterName",  "value": "={{ $json.body.requesterName }}",  "type": "string" },
+            { "id": "a4", "name": "requesterDept",  "value": "={{ $json.body.requesterDept }}",  "type": "string" },
+            { "id": "a5", "name": "requesterEmail", "value": "={{ $json.body.requesterEmail }}", "type": "string" },
+            { "id": "a6", "name": "approverEmail",  "value": "={{ $json.body.approverEmail }}",  "type": "string" },
+            { "id": "a7", "name": "approveUrl",     "value": "={{ $json.body.approveUrl }}",     "type": "string" },
+            { "id": "a8", "name": "details",        "value": "={{ $json.body.details }}",        "type": "string" },
+            { "id": "a9", "name": "submittedAt",    "value": "={{ $now.toISO() }}",              "type": "string" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "22222222-2222-2222-2222-222222222222",
+      "name": "Extract Payload",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [460, 400]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            { "outputKey": "vehicle", "conditions": { "options": { "caseSensitive": false, "typeValidation": "strict" }, "conditions": [ { "leftValue": "={{ $json.documentType }}", "rightValue": "vehicle", "operator": { "type": "string", "operation": "equals" } } ] } },
+            { "outputKey": "outing",  "conditions": { "options": { "caseSensitive": false, "typeValidation": "strict" }, "conditions": [ { "leftValue": "={{ $json.documentType }}", "rightValue": "outing",  "operator": { "type": "string", "operation": "equals" } } ] } },
+            { "outputKey": "goods",   "conditions": { "options": { "caseSensitive": false, "typeValidation": "strict" }, "conditions": [ { "leftValue": "={{ $json.documentType }}", "rightValue": "goods",   "operator": { "type": "string", "operation": "equals" } } ] } },
+            { "outputKey": "visitor", "conditions": { "options": { "caseSensitive": false, "typeValidation": "strict" }, "conditions": [ { "leftValue": "={{ $json.documentType }}", "rightValue": "visitor", "operator": { "type": "string", "operation": "equals" } } ] } },
+            { "outputKey": "drink",   "conditions": { "options": { "caseSensitive": false, "typeValidation": "strict" }, "conditions": [ { "leftValue": "={{ $json.documentType }}", "rightValue": "drink",   "operator": { "type": "string", "operation": "equals" } } ] } },
+            { "outputKey": "food",    "conditions": { "options": { "caseSensitive": false, "typeValidation": "strict" }, "conditions": [ { "leftValue": "={{ $json.documentType }}", "rightValue": "food",    "operator": { "type": "string", "operation": "equals" } } ] } }
+          ]
+        },
+        "options": { "fallbackOutput": "extra", "renameFallbackOutput": "other" }
+      },
+      "id": "33333333-3333-3333-3333-333333333333",
+      "name": "Switch by Document Type",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [680, 400]
+    },
+    {
+      "parameters": {
+        "assignments": { "assignments": [
+          { "id": "t1", "name": "emailSubject", "value": "=[TBKK SOC] ขออนุมัติใบขอใช้รถ - {{ $json.requesterName }}", "type": "string" },
+          { "id": "t2", "name": "emoji",        "value": "🚗", "type": "string" },
+          { "id": "t3", "name": "docTitle",     "value": "ใบขอใช้รถ", "type": "string" }
+        ] }, "options": {}
+      },
+      "id": "44444444-4444-4444-4444-444444444401",
+      "name": "Tpl: Vehicle",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [900, 100]
+    },
+    {
+      "parameters": {
+        "assignments": { "assignments": [
+          { "id": "t1", "name": "emailSubject", "value": "=[TBKK SOC] ขออนุมัติออกนอกสถานที่ - {{ $json.requesterName }}", "type": "string" },
+          { "id": "t2", "name": "emoji",        "value": "🚶", "type": "string" },
+          { "id": "t3", "name": "docTitle",     "value": "ใบขอออกนอกสถานที่", "type": "string" }
+        ] }, "options": {}
+      },
+      "id": "44444444-4444-4444-4444-444444444402",
+      "name": "Tpl: Outing",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [900, 220]
+    },
+    {
+      "parameters": {
+        "assignments": { "assignments": [
+          { "id": "t1", "name": "emailSubject", "value": "=[TBKK SOC] ขออนุมัตินำของเข้า/ออก - {{ $json.requesterName }}", "type": "string" },
+          { "id": "t2", "name": "emoji",        "value": "📦", "type": "string" },
+          { "id": "t3", "name": "docTitle",     "value": "ใบนำของเข้า/ออก", "type": "string" }
+        ] }, "options": {}
+      },
+      "id": "44444444-4444-4444-4444-444444444403",
+      "name": "Tpl: Goods",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [900, 340]
+    },
+    {
+      "parameters": {
+        "assignments": { "assignments": [
+          { "id": "t1", "name": "emailSubject", "value": "=[TBKK SOC] ขออนุมัติผู้มาติดต่อ - {{ $json.requesterName }}", "type": "string" },
+          { "id": "t2", "name": "emoji",        "value": "👤", "type": "string" },
+          { "id": "t3", "name": "docTitle",     "value": "นัดหมายผู้มาติดต่อ", "type": "string" }
+        ] }, "options": {}
+      },
+      "id": "44444444-4444-4444-4444-444444444404",
+      "name": "Tpl: Visitor",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [900, 460]
+    },
+    {
+      "parameters": {
+        "assignments": { "assignments": [
+          { "id": "t1", "name": "emailSubject", "value": "=[TBKK SOC] สั่งเครื่องดื่ม - {{ $json.requesterName }}", "type": "string" },
+          { "id": "t2", "name": "emoji",        "value": "☕", "type": "string" },
+          { "id": "t3", "name": "docTitle",     "value": "ใบสั่งเครื่องดื่ม", "type": "string" }
+        ] }, "options": {}
+      },
+      "id": "44444444-4444-4444-4444-444444444405",
+      "name": "Tpl: Drink",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [900, 580]
+    },
+    {
+      "parameters": {
+        "assignments": { "assignments": [
+          { "id": "t1", "name": "emailSubject", "value": "=[TBKK SOC] สั่งอาหาร - {{ $json.requesterName }}", "type": "string" },
+          { "id": "t2", "name": "emoji",        "value": "🍱", "type": "string" },
+          { "id": "t3", "name": "docTitle",     "value": "ใบสั่งอาหาร", "type": "string" }
+        ] }, "options": {}
+      },
+      "id": "44444444-4444-4444-4444-444444444406",
+      "name": "Tpl: Food",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [900, 700]
+    },
+    {
+      "parameters": {
+        "assignments": { "assignments": [
+          { "id": "t1", "name": "emailSubject", "value": "=[TBKK SOC] เอกสารใหม่ - {{ $json.requesterName }}", "type": "string" },
+          { "id": "t2", "name": "emoji",        "value": "📄", "type": "string" },
+          { "id": "t3", "name": "docTitle",     "value": "เอกสารทั่วไป", "type": "string" }
+        ] }, "options": {}
+      },
+      "id": "44444444-4444-4444-4444-444444444499",
+      "name": "Tpl: Other",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [900, 820]
+    },
+    {
+      "parameters": { "numberInputs": 7 },
+      "id": "55555555-5555-5555-5555-555555555555",
+      "name": "Merge Templates",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [1140, 400]
+    },
+    {
+      "parameters": {
+        "fromEmail": "soc-system@tbkk.co.th",
+        "toEmail": "={{ $json.approverEmail }}",
+        "subject": "={{ $json.emailSubject }}",
+        "emailType": "html",
+        "html": "=<div style=\"font-family:Sarabun,Arial,sans-serif;max-width:600px;margin:auto;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden\">\n  <div style=\"background:#1e40af;color:#fff;padding:20px\">\n    <h2 style=\"margin:0\">{{ $json.emoji }} TBKK SOC - {{ $json.docTitle }}</h2>\n  </div>\n  <div style=\"padding:24px;color:#111\">\n    <p>เรียน หัวหน้า,</p>\n    <p>มีเอกสารรอการอนุมัติจากคุณ:</p>\n    <table style=\"width:100%;border-collapse:collapse;margin:16px 0\">\n      <tr><td style=\"padding:8px;background:#f3f4f6\"><b>ผู้ขอ</b></td><td style=\"padding:8px\">{{ $json.requesterName }}</td></tr>\n      <tr><td style=\"padding:8px;background:#f3f4f6\"><b>แผนก</b></td><td style=\"padding:8px\">{{ $json.requesterDept }}</td></tr>\n      <tr><td style=\"padding:8px;background:#f3f4f6\"><b>ประเภท</b></td><td style=\"padding:8px\">{{ $json.docTitle }}</td></tr>\n      <tr><td style=\"padding:8px;background:#f3f4f6\"><b>รายละเอียด</b></td><td style=\"padding:8px\">{{ $json.details }}</td></tr>\n      <tr><td style=\"padding:8px;background:#f3f4f6\"><b>เลขเอกสาร</b></td><td style=\"padding:8px\">{{ $json.documentId }}</td></tr>\n    </table>\n    <div style=\"text-align:center;margin:32px 0\">\n      <a href=\"{{ $json.approveUrl }}\" style=\"background:#10b981;color:#fff;padding:14px 32px;text-decoration:none;border-radius:8px;font-weight:bold;display:inline-block\">✓ คลิกเพื่อพิจารณาอนุมัติ</a>\n    </div>\n    <p style=\"color:#6b7280;font-size:12px\">ระบบ TBKK SOC | ส่งจาก n8n Automation Workflow<br>หากต้องการความช่วยเหลือ ติดต่อ IT Helpdesk</p>\n  </div>\n</div>",
+        "options": {}
+      },
+      "id": "66666666-6666-6666-6666-666666666666",
+      "name": "Send Email to Approver",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [1380, 300],
+      "credentials": { "smtp": { "id": "REPLACE_WITH_SMTP_CRED_ID", "name": "TBKK SMTP" } }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.line.me/v2/bot/message/push",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name": "Content-Type", "value": "application/json" } ] },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"to\": \"{{ $vars.LINE_GROUP_ID }}\",\n  \"messages\": [{\n    \"type\": \"text\",\n    \"text\": \"{{ $json.emoji }} เอกสารใหม่รออนุมัติ\\n\\n📋 ประเภท: {{ $json.docTitle }}\\n👤 ผู้ขอ: {{ $json.requesterName }} ({{ $json.requesterDept }})\\n📝 รายละเอียด: {{ $json.details }}\\n\\n🔗 ลิงก์อนุมัติ: {{ $json.approveUrl }}\"\n  }]\n}",
+        "options": {}
+      },
+      "id": "77777777-7777-7777-7777-777777777777",
+      "name": "LINE Notify Team",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1380, 500],
+      "credentials": { "httpHeaderAuth": { "id": "REPLACE_WITH_LINE_TOKEN_ID", "name": "LINE Channel Access Token" } }
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=https://firestore.googleapis.com/v1/projects/tbkk-system/databases/(default)/documents/artifacts/default-app-id/public/data/approval_workflows/{{ $json.documentId }}?updateMask.fieldPaths=notificationSentAt&updateMask.fieldPaths=notificationChannels",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleFirebaseCloudFirestoreOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"fields\": {\n    \"notificationSentAt\": { \"timestampValue\": \"{{ $json.submittedAt }}\" },\n    \"notificationChannels\": { \"arrayValue\": { \"values\": [ { \"stringValue\": \"email\" }, { \"stringValue\": \"line\" } ] } }\n  }\n}",
+        "options": {}
+      },
+      "id": "88888888-8888-8888-8888-888888888888",
+      "name": "Update Firestore Status",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1620, 400],
+      "credentials": { "googleFirebaseCloudFirestoreOAuth2Api": { "id": "REPLACE_WITH_FIREBASE_CRED_ID", "name": "Firebase Firestore" } }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": true,\n  \"documentId\": \"{{ $json.documentId }}\",\n  \"message\": \"Notifications sent via Email + LINE\",\n  \"timestamp\": \"{{ $now.toISO() }}\"\n}",
+        "options": {}
+      },
+      "id": "99999999-9999-9999-9999-999999999999",
+      "name": "Webhook Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1860, 400]
+    }
+  ],
+  "connections": {
+    "Webhook: New Approval": { "main": [ [ { "node": "Extract Payload", "type": "main", "index": 0 } ] ] },
+    "Extract Payload":       { "main": [ [ { "node": "Switch by Document Type", "type": "main", "index": 0 } ] ] },
+    "Switch by Document Type": {
+      "main": [
+        [ { "node": "Tpl: Vehicle", "type": "main", "index": 0 } ],
+        [ { "node": "Tpl: Outing",  "type": "main", "index": 0 } ],
+        [ { "node": "Tpl: Goods",   "type": "main", "index": 0 } ],
+        [ { "node": "Tpl: Visitor", "type": "main", "index": 0 } ],
+        [ { "node": "Tpl: Drink",   "type": "main", "index": 0 } ],
+        [ { "node": "Tpl: Food",    "type": "main", "index": 0 } ],
+        [ { "node": "Tpl: Other",   "type": "main", "index": 0 } ]
+      ]
+    },
+    "Tpl: Vehicle": { "main": [ [ { "node": "Merge Templates", "type": "main", "index": 0 } ] ] },
+    "Tpl: Outing":  { "main": [ [ { "node": "Merge Templates", "type": "main", "index": 1 } ] ] },
+    "Tpl: Goods":   { "main": [ [ { "node": "Merge Templates", "type": "main", "index": 2 } ] ] },
+    "Tpl: Visitor": { "main": [ [ { "node": "Merge Templates", "type": "main", "index": 3 } ] ] },
+    "Tpl: Drink":   { "main": [ [ { "node": "Merge Templates", "type": "main", "index": 4 } ] ] },
+    "Tpl: Food":    { "main": [ [ { "node": "Merge Templates", "type": "main", "index": 5 } ] ] },
+    "Tpl: Other":   { "main": [ [ { "node": "Merge Templates", "type": "main", "index": 6 } ] ] },
+    "Merge Templates": {
+      "main": [ [
+        { "node": "Send Email to Approver", "type": "main", "index": 0 },
+        { "node": "LINE Notify Team",        "type": "main", "index": 0 }
+      ] ]
+    },
+    "Send Email to Approver": { "main": [ [ { "node": "Update Firestore Status", "type": "main", "index": 0 } ] ] },
+    "LINE Notify Team":       { "main": [ [ { "node": "Update Firestore Status", "type": "main", "index": 0 } ] ] },
+    "Update Firestore Status":{ "main": [ [ { "node": "Webhook Response", "type": "main", "index": 0 } ] ] }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1", "saveExecutionProgress": true, "saveManualExecutions": true },
+  "versionId": "v1.0.0",
+  "meta": { "templateCredsSetupCompleted": false, "instanceId": "tbkk-soc" },
+  "id": "tbkk-soc-new-approval",
+  "tags": [ { "name": "TBKK", "id": "tbkk" }, { "name": "SOC", "id": "soc" }, { "name": "Notification", "id": "notif" } ]
+}

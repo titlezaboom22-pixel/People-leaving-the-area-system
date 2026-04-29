@@ -1,0 +1,159 @@
+{
+  "name": "TBKK SOC - Approval Response Notification",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "soc-approval-response",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
+      "name": "Webhook: Approval Response",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1.1,
+      "position": [240, 400],
+      "webhookId": "soc-approval-response"
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            { "id": "r1", "name": "documentId",     "value": "={{ $json.body.documentId }}",     "type": "string" },
+            { "id": "r2", "name": "documentType",   "value": "={{ $json.body.documentType }}",   "type": "string" },
+            { "id": "r3", "name": "status",         "value": "={{ $json.body.status }}",         "type": "string" },
+            { "id": "r4", "name": "approverName",   "value": "={{ $json.body.approverName }}",   "type": "string" },
+            { "id": "r5", "name": "requesterEmail", "value": "={{ $json.body.requesterEmail }}", "type": "string" },
+            { "id": "r6", "name": "requesterName",  "value": "={{ $json.body.requesterName }}",  "type": "string" },
+            { "id": "r7", "name": "comment",        "value": "={{ $json.body.comment || '-' }}", "type": "string" },
+            { "id": "r8", "name": "decidedAt",      "value": "={{ $now.toISO() }}",              "type": "string" }
+          ]
+        },
+        "options": {}
+      },
+      "id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb",
+      "name": "Extract Response",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [460, 400]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            { "outputKey": "approved", "conditions": { "options": { "caseSensitive": false, "typeValidation": "strict" }, "conditions": [ { "leftValue": "={{ $json.status }}", "rightValue": "approved", "operator": { "type": "string", "operation": "equals" } } ] } },
+            { "outputKey": "rejected", "conditions": { "options": { "caseSensitive": false, "typeValidation": "strict" }, "conditions": [ { "leftValue": "={{ $json.status }}", "rightValue": "rejected", "operator": { "type": "string", "operation": "equals" } } ] } }
+          ]
+        },
+        "options": {}
+      },
+      "id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+      "name": "Switch by Status",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [680, 400]
+    },
+    {
+      "parameters": {
+        "fromEmail": "soc-system@tbkk.co.th",
+        "toEmail": "={{ $json.requesterEmail }}",
+        "subject": "=[TBKK SOC] ✅ เอกสารของคุณได้รับการอนุมัติแล้ว",
+        "emailType": "html",
+        "html": "=<div style=\"font-family:Sarabun,Arial,sans-serif;max-width:600px;margin:auto;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden\">\n  <div style=\"background:#10b981;color:#fff;padding:20px;text-align:center\">\n    <h2 style=\"margin:0\">✅ เอกสารได้รับการอนุมัติ</h2>\n  </div>\n  <div style=\"padding:24px\">\n    <p>เรียน คุณ {{ $json.requesterName }},</p>\n    <p>เอกสารเลขที่ <b>{{ $json.documentId }}</b> ของคุณได้รับการอนุมัติแล้ว</p>\n    <table style=\"width:100%;border-collapse:collapse;margin:16px 0\">\n      <tr><td style=\"padding:8px;background:#f3f4f6\"><b>ผู้อนุมัติ</b></td><td style=\"padding:8px\">{{ $json.approverName }}</td></tr>\n      <tr><td style=\"padding:8px;background:#f3f4f6\"><b>เวลา</b></td><td style=\"padding:8px\">{{ $json.decidedAt }}</td></tr>\n      <tr><td style=\"padding:8px;background:#f3f4f6\"><b>หมายเหตุ</b></td><td style=\"padding:8px\">{{ $json.comment }}</td></tr>\n    </table>\n    <p style=\"color:#6b7280;font-size:12px\">ระบบ TBKK SOC | n8n Automation</p>\n  </div>\n</div>",
+        "options": {}
+      },
+      "id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+      "name": "Email: Approved",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [920, 250],
+      "credentials": { "smtp": { "id": "REPLACE_WITH_SMTP_CRED_ID", "name": "TBKK SMTP" } }
+    },
+    {
+      "parameters": {
+        "fromEmail": "soc-system@tbkk.co.th",
+        "toEmail": "={{ $json.requesterEmail }}",
+        "subject": "=[TBKK SOC] ❌ เอกสารของคุณไม่ได้รับการอนุมัติ",
+        "emailType": "html",
+        "html": "=<div style=\"font-family:Sarabun,Arial,sans-serif;max-width:600px;margin:auto;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden\">\n  <div style=\"background:#ef4444;color:#fff;padding:20px;text-align:center\">\n    <h2 style=\"margin:0\">❌ เอกสารไม่ได้รับการอนุมัติ</h2>\n  </div>\n  <div style=\"padding:24px\">\n    <p>เรียน คุณ {{ $json.requesterName }},</p>\n    <p>เอกสารเลขที่ <b>{{ $json.documentId }}</b> ไม่ได้รับการอนุมัติ</p>\n    <table style=\"width:100%;border-collapse:collapse;margin:16px 0\">\n      <tr><td style=\"padding:8px;background:#f3f4f6\"><b>ผู้พิจารณา</b></td><td style=\"padding:8px\">{{ $json.approverName }}</td></tr>\n      <tr><td style=\"padding:8px;background:#f3f4f6\"><b>เหตุผล</b></td><td style=\"padding:8px;color:#dc2626\">{{ $json.comment }}</td></tr>\n    </table>\n    <p>หากต้องการสอบถามเพิ่มเติม กรุณาติดต่อหัวหน้าโดยตรง</p>\n  </div>\n</div>",
+        "options": {}
+      },
+      "id": "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+      "name": "Email: Rejected",
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [920, 550],
+      "credentials": { "smtp": { "id": "REPLACE_WITH_SMTP_CRED_ID", "name": "TBKK SMTP" } }
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.line.me/v2/bot/message/push",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": { "parameters": [ { "name": "Content-Type", "value": "application/json" } ] },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"to\": \"{{ $vars.LINE_GROUP_ID }}\",\n  \"messages\": [{\n    \"type\": \"text\",\n    \"text\": \"{{ $json.status === 'approved' ? '✅' : '❌' }} ผลการพิจารณาเอกสาร\\n\\n📋 เลขเอกสาร: {{ $json.documentId }}\\n👤 ผู้ขอ: {{ $json.requesterName }}\\n👨‍💼 ผู้พิจารณา: {{ $json.approverName }}\\n📌 สถานะ: {{ $json.status === 'approved' ? 'อนุมัติ' : 'ไม่อนุมัติ' }}\\n💬 หมายเหตุ: {{ $json.comment }}\"\n  }]\n}",
+        "options": {}
+      },
+      "id": "ffffffff-ffff-ffff-ffff-ffffffffffff",
+      "name": "LINE Notify Result",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1180, 400],
+      "credentials": { "httpHeaderAuth": { "id": "REPLACE_WITH_LINE_TOKEN_ID", "name": "LINE Channel Access Token" } }
+    },
+    {
+      "parameters": {
+        "method": "PATCH",
+        "url": "=https://firestore.googleapis.com/v1/projects/tbkk-system/databases/(default)/documents/artifacts/default-app-id/public/data/approval_workflows/{{ $json.documentId }}?updateMask.fieldPaths=finalStatus&updateMask.fieldPaths=decidedAt&updateMask.fieldPaths=resultNotifiedAt",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "googleFirebaseCloudFirestoreOAuth2Api",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"fields\": {\n    \"finalStatus\":      { \"stringValue\": \"{{ $json.status }}\" },\n    \"decidedAt\":        { \"timestampValue\": \"{{ $json.decidedAt }}\" },\n    \"resultNotifiedAt\": { \"timestampValue\": \"{{ $now.toISO() }}\" }\n  }\n}",
+        "options": {}
+      },
+      "id": "ffffffff-1111-2222-3333-444444444444",
+      "name": "Update Firestore Final",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [1420, 400],
+      "credentials": { "googleFirebaseCloudFirestoreOAuth2Api": { "id": "REPLACE_WITH_FIREBASE_CRED_ID", "name": "Firebase Firestore" } }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": true,\n  \"documentId\": \"{{ $json.documentId }}\",\n  \"finalStatus\": \"{{ $json.status }}\",\n  \"requesterNotified\": true\n}",
+        "options": {}
+      },
+      "id": "ffffffff-5555-6666-7777-888888888888",
+      "name": "Webhook Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1660, 400]
+    }
+  ],
+  "connections": {
+    "Webhook: Approval Response": { "main": [ [ { "node": "Extract Response", "type": "main", "index": 0 } ] ] },
+    "Extract Response":           { "main": [ [ { "node": "Switch by Status", "type": "main", "index": 0 } ] ] },
+    "Switch by Status": {
+      "main": [
+        [ { "node": "Email: Approved", "type": "main", "index": 0 } ],
+        [ { "node": "Email: Rejected", "type": "main", "index": 0 } ]
+      ]
+    },
+    "Email: Approved":        { "main": [ [ { "node": "LINE Notify Result", "type": "main", "index": 0 } ] ] },
+    "Email: Rejected":        { "main": [ [ { "node": "LINE Notify Result", "type": "main", "index": 0 } ] ] },
+    "LINE Notify Result":     { "main": [ [ { "node": "Update Firestore Final", "type": "main", "index": 0 } ] ] },
+    "Update Firestore Final": { "main": [ [ { "node": "Webhook Response", "type": "main", "index": 0 } ] ] }
+  },
+  "active": false,
+  "settings": { "executionOrder": "v1", "saveExecutionProgress": true, "saveManualExecutions": true },
+  "versionId": "v1.0.0",
+  "meta": { "templateCredsSetupCompleted": false, "instanceId": "tbkk-soc" },
+  "id": "tbkk-soc-approval-response",
+  "tags": [ { "name": "TBKK", "id": "tbkk" }, { "name": "SOC", "id": "soc" }, { "name": "Notification", "id": "notif" } ]
+}

@@ -18,18 +18,32 @@ let _serverCheckedAt = 0;
 
 async function ensureServerOk() {
   const now = Date.now();
-  if (_serverOk !== null && now - _serverCheckedAt < 30000) return _serverOk;
+  // Cache success for 60s; don't cache failure (always retry)
+  if (_serverOk === true && now - _serverCheckedAt < 60000) return true;
   try {
-    const res = await fetch(`${EMAIL_API}/api/health`, { signal: AbortSignal.timeout(2000) });
+    // Render free tier may take 30+ seconds to wake from sleep — give it 35s timeout
+    const res = await fetch(`${EMAIL_API}/api/health`, { signal: AbortSignal.timeout(35000) });
     const json = await res.json();
     _serverOk = !!json.hasSMTP;
     _serverCheckedAt = now;
     return _serverOk;
-  } catch {
+  } catch (err) {
+    console.warn('[notifyEmail] health check failed:', err?.message || err);
     _serverOk = false;
     _serverCheckedAt = now;
     return false;
   }
+}
+
+// 🔥 Wake-up call — fire-and-forget เพื่อปลุก server เมื่อหน้าโหลด
+// (Render free tier sleeps after 15 min idle)
+let _wakeupSent = false;
+export function wakeupEmailServer() {
+  if (_wakeupSent) return;
+  _wakeupSent = true;
+  fetch(`${EMAIL_API}/api/health`, { signal: AbortSignal.timeout(60000) })
+    .then(() => { _serverOk = true; _serverCheckedAt = Date.now(); console.log('[notifyEmail] ✅ Email server พร้อมใช้งาน'); })
+    .catch(() => { _wakeupSent = false; /* allow retry */ });
 }
 
 // --- User / email lookup ---
@@ -53,7 +67,11 @@ async function getUsersByDepartment(department, { roleType, role } = {}) {
     snap.forEach(d => {
       const u = { id: d.id, ...d.data() };
       if (u.active === false) return;
-      if (normalizeDepartment(u.department) !== target) return;
+      // Match by primary department OR additional head departments
+      const primaryMatch = normalizeDepartment(u.department) === target;
+      const additionalDepts = Array.isArray(u.headOfAlsoDepartments) ? u.headOfAlsoDepartments : [];
+      const additionalMatch = additionalDepts.some(d2 => normalizeDepartment(d2) === target);
+      if (!primaryMatch && !additionalMatch) return;
       if (roleType && (u.roleType || '').toUpperCase() !== roleType.toUpperCase()) return;
       if (role && (u.role || '').toUpperCase() !== role.toUpperCase()) return;
       out.push(u);
@@ -118,9 +136,11 @@ function formNameOf(sourceForm) {
   return MAP[sourceForm] || sourceForm || 'เอกสาร';
 }
 
-function buildApproveUrl(workflowId) {
+function buildApproveUrl(workflowId, userEmail) {
   if (!workflowId) return PUBLIC_URL;
-  return `${PUBLIC_URL}/index.html?approve=${workflowId}`;
+  const base = `${PUBLIC_URL}/index.html?approve=${workflowId}`;
+  if (userEmail) return `${base}&as=${encodeURIComponent(userEmail)}`;
+  return base;
 }
 
 function fmtDate(iso) {
@@ -133,22 +153,41 @@ function fmtDate(iso) {
 // --- Backend senders ---
 
 async function postEmail(endpoint, payload) {
+  // ✨ ส่งตรงเลย — ไม่ block ด้วย health check (Render free tier ตื่นช้า)
+  // ใช้ timeout 60 วินาทีเพื่อรอ server wake up
   try {
-    const ok = await ensureServerOk();
-    if (!ok) {
-      console.log(`[notifyEmail] server ไม่พร้อมหรือยังไม่ได้ตั้ง SMTP — ข้ามส่ง (${endpoint})`);
-      return { sent: false, reason: 'server-not-ready' };
-    }
     const res = await fetch(`${EMAIL_API}${endpoint}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(60000),  // 60s — รอ Render wake up
     });
     const json = await res.json().catch(() => ({}));
     if (!res.ok) {
       console.warn(`[notifyEmail] ${endpoint} HTTP ${res.status}`, json);
+      // 1 retry ถ้า server timeout / 500
+      if (res.status >= 500 || res.status === 502 || res.status === 503) {
+        console.log(`[notifyEmail] retry...`);
+        await new Promise(r => setTimeout(r, 2000));
+        try {
+          const retry = await fetch(`${EMAIL_API}${endpoint}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload),
+            signal: AbortSignal.timeout(60000),
+          });
+          const retryJson = await retry.json().catch(() => ({}));
+          if (retry.ok) {
+            console.log(`[notifyEmail] ✓ retry success`);
+            _serverOk = true; _serverCheckedAt = Date.now();
+            return { sent: true, demo: retryJson.demo || false };
+          }
+        } catch {}
+      }
       return { sent: false, reason: json.error || `HTTP ${res.status}` };
     }
+    // อัปเดต cache ว่า server พร้อม
+    _serverOk = true; _serverCheckedAt = Date.now();
     return { sent: true, demo: json.demo || false };
   } catch (err) {
     console.warn(`[notifyEmail] ${endpoint} error:`, err.message);
@@ -160,7 +199,7 @@ async function postEmail(endpoint, payload) {
 // PUBLIC API — เรียกจาก approvalNotifications.js และ App.jsx
 // =========================================================================
 
-/** ส่งเมลให้ผู้อนุมัติคนแรก เมื่อพนักงานสร้างคำขอ */
+/** ส่งเมลให้ผู้อนุมัติคนแรก เมื่อพนักงานสร้างคำขอ — แต่ละคนได้ URL เฉพาะที่ระบุ email ตัวเอง */
 export async function notifyRequestCreated(item) {
   if (!item) return;
   try {
@@ -169,19 +208,23 @@ export async function notifyRequestCreated(item) {
       console.log('[notifyEmail] ไม่พบอีเมลผู้อนุมัติสำหรับ', item.department, item.targetType);
       return;
     }
-    const approveUrl = buildApproveUrl(item.id);
     const formName = formNameOf(item.sourceForm);
 
-    await Promise.all(emails.map(to => postEmail('/api/send-approval-email', {
-      to,
-      approverName: users?.[0]?.displayName || label,
-      documentTitle: formName,
-      requesterName: item.requesterName || '-',
-      department: item.requesterDepartment || '-',
-      date: fmtDate(item.createdAt),
-      approveUrl,
-    })));
-    console.log(`[notifyEmail] แจ้ง ${label} ว่ามีคำขอ ${formName} ใหม่ → ${emails.join(', ')}`);
+    // ส่งให้แต่ละคน — URL เฉพาะคน (?as=their_email) เพื่อ auto-fill ชื่อในหน้าอนุมัติ
+    await Promise.all(emails.map((to) => {
+      const userOfThisEmail = users?.find(u => u.email?.toLowerCase() === to.toLowerCase());
+      const personalUrl = buildApproveUrl(item.id, to);
+      return postEmail('/api/send-approval-email', {
+        to,
+        approverName: userOfThisEmail?.displayName || userOfThisEmail?.name || label,
+        documentTitle: formName,
+        requesterName: item.requesterName || '-',
+        department: item.requesterDepartment || '-',
+        date: fmtDate(item.createdAt),
+        approveUrl: personalUrl,
+      });
+    }));
+    console.log(`[notifyEmail] แจ้ง ${label} ว่ามีคำขอ ${formName} ใหม่ → ${emails.join(', ')} (each got personalized URL)`);
   } catch (err) {
     console.warn('[notifyEmail] notifyRequestCreated error:', err);
   }
@@ -199,6 +242,8 @@ export async function notifyStepApproved(nextItem, prevItem) {
     const approveUrl = buildApproveUrl(nextItem.id);
     const formName = formNameOf(nextItem.sourceForm);
 
+    // แจ้งผู้อนุมัติ step ถัดไป (เช่น GA) ว่ามีเอกสารรอ
+    // ❌ ไม่แจ้งผู้ขอ — รอแจ้งทีเดียวตอน GA จบงาน (notifyWorkflowCompleted)
     await Promise.all(emails.map(to => postEmail('/api/send-approval-email', {
       to,
       approverName: users?.[0]?.displayName || label,
@@ -259,6 +304,128 @@ export async function notifyWorkflowCompleted(lastItem) {
     console.log(`[notifyEmail] แจ้งผู้ขอว่าเสร็จแล้ว → ${to}`);
   } catch (err) {
     console.warn('[notifyEmail] notifyWorkflowCompleted error:', err);
+  }
+}
+
+/**
+ * ส่งเมลให้ผู้ขอ เมื่อ workflow ถูก "ปฏิเสธ" (terminal — จบ chain)
+ * แตกต่างจาก notifyWorkflowReturned ตรงที่ไม่ใช่การส่งกลับให้แก้ — เป็นการปฏิเสธจริง
+ * แต่ผู้ขอยัง "แก้ไขส่งใหม่" ได้ (เปิดฟอร์มใหม่ที่ prefill ข้อมูลเดิม)
+ */
+export async function notifyWorkflowRejected(item) {
+  if (!item) return;
+  try {
+    const requester = await getUserById(item.requesterId);
+    const to = requester?.email;
+    if (!to) {
+      console.log('[notifyEmail] ผู้ขอไม่มีอีเมล, ข้ามแจ้งเตือน rejected');
+      return;
+    }
+    const formName = formNameOf(item.sourceForm);
+    const subject = `[SOC] ${formName} ของคุณถูกปฏิเสธ`;
+    const reason = item.rejectReason || '-';
+    const rejectedBy = item.rejectedBy || '-';
+    const rejectedByRole = item.rejectedByRole || '';
+    const resubmitUrl = `${PUBLIC_URL}/vehicle.html?resubmitFrom=${encodeURIComponent(item.id || '')}`;
+
+    const html = `
+      <div style="font-family:'Segoe UI',sans-serif;max-width:600px;margin:0 auto;background:#f8fafc;padding:20px">
+        <div style="background:#dc2626;color:white;padding:24px 32px;border-radius:16px 16px 0 0;text-align:center">
+          <h2 style="margin:0;font-size:20px;letter-spacing:2px">✗ ถูกปฏิเสธ</h2>
+          <p style="margin:4px 0 0;font-size:12px;opacity:0.9">SOC Systems — TBKK Group</p>
+        </div>
+        <div style="background:white;padding:32px;border-radius:0 0 16px 16px;box-shadow:0 2px 8px rgba(0,0,0,0.08)">
+          <p style="font-size:14px;color:#334155">เรียน คุณ${requester.displayName || requester.name || item.requesterName || '-'}</p>
+          <p style="font-size:14px;color:#334155;margin-bottom:16px"><strong>${formName}</strong> ของคุณ <span style="color:#dc2626;font-weight:bold">ถูกปฏิเสธ</span> ${rejectedByRole ? `จาก ${rejectedByRole}` : ''}</p>
+          <div style="background:#fef2f2;border-left:4px solid #dc2626;padding:14px 18px;border-radius:8px;color:#7f1d1d;margin:16px 0">
+            <div style="font-weight:bold;margin-bottom:6px">📝 เหตุผลที่ปฏิเสธ:</div>
+            <div style="white-space:pre-wrap">${reason}</div>
+          </div>
+          <div style="background:#f1f5f9;border-radius:12px;padding:16px;margin:16px 0">
+            <table style="width:100%;font-size:13px;color:#475569">
+              <tr><td style="padding:4px 0;font-weight:600">เอกสาร:</td><td>${formName}</td></tr>
+              <tr><td style="padding:4px 0;font-weight:600">วันที่ขอ:</td><td>${fmtDate(item.createdAt)}</td></tr>
+              <tr><td style="padding:4px 0;font-weight:600">ปฏิเสธโดย:</td><td>${rejectedBy}</td></tr>
+              <tr><td style="padding:4px 0;font-weight:600">ปฏิเสธเมื่อ:</td><td>${fmtDate(item.rejectedAt)}</td></tr>
+            </table>
+          </div>
+          <div style="text-align:center;margin:24px 0">
+            <a href="${resubmitUrl}" style="display:inline-block;background:#2563eb;color:white;padding:14px 32px;border-radius:12px;text-decoration:none;font-weight:bold;font-size:14px;box-shadow:0 4px 12px rgba(37,99,235,0.3)">
+              ✏️ แก้ไขและส่งใหม่
+            </a>
+          </div>
+          <p style="font-size:11px;color:#94a3b8;text-align:center;line-height:1.6">หรือเปิดระบบ → "เอกสารของฉัน" → ปุ่ม "แก้ไขส่งใหม่"</p>
+        </div>
+        <p style="text-align:center;font-size:10px;color:#94a3b8;margin-top:16px">SOC Systems | TBKK</p>
+      </div>
+    `;
+    const text = `${formName} ของคุณถูกปฏิเสธ\n\nเหตุผล: ${reason}\nปฏิเสธโดย: ${rejectedBy}\nปฏิเสธเมื่อ: ${fmtDate(item.rejectedAt)}\n\nแก้ไขและส่งใหม่: ${resubmitUrl}`;
+    await postEmail('/api/send-email', { to, subject, html, text });
+    console.log(`[notifyEmail] แจ้งผู้ขอว่าถูกปฏิเสธ → ${to}`);
+  } catch (err) {
+    console.warn('[notifyEmail] notifyWorkflowRejected error:', err);
+  }
+}
+
+/**
+ * ส่งเมลให้ทีม GA แจ้งว่ามีใบขอใช้รถใหม่ (หลังหัวหน้าอนุมัติ step 1)
+ * Query users ที่ roleType='GA' ทุกคน → ส่ง to: คนแรก, cc: คนที่เหลือ
+ */
+export async function notifyGAVehicleRequest(item) {
+  if (!item) return;
+  try {
+    const gaUsers = await getUsersByDepartment('GA', { role: 'GA' });
+    let emails = gaUsers.map(u => u.email).filter(Boolean);
+    if (emails.length === 0 && SPECIAL_EMAILS.GA) emails = [SPECIAL_EMAILS.GA];
+    if (emails.length === 0) {
+      console.log('[notifyEmail] ไม่พบอีเมล GA, ข้ามแจ้งเตือน');
+      return;
+    }
+    const to = emails[0];
+    const cc = emails.slice(1);
+    const formName = formNameOf(item.sourceForm);
+    const subject = `[SOC] ใบขอใช้รถใหม่ รอจัดรถ - ${item.requesterName || '-'}`;
+    const approveUrl = buildApproveUrl(item.id);
+    const p = item.requestPayload || {};
+    const passengerCount = (p.passengers || []).filter(x => x?.name?.trim()).length;
+
+    const html = `
+      <div style="font-family:'Segoe UI',sans-serif;max-width:600px;margin:0 auto;background:#f8fafc;padding:20px">
+        <div style="background:#0ea5e9;color:white;padding:24px 32px;border-radius:16px 16px 0 0;text-align:center">
+          <h2 style="margin:0;font-size:20px;letter-spacing:2px">🚗 ใบขอใช้รถใหม่</h2>
+          <p style="margin:4px 0 0;font-size:12px;opacity:0.9">หัวหน้าอนุมัติแล้ว — รอ GA จัดรถ</p>
+        </div>
+        <div style="background:white;padding:32px;border-radius:0 0 16px 16px;box-shadow:0 2px 8px rgba(0,0,0,0.08)">
+          <p style="font-size:14px;color:#334155">เรียน ทีม GA</p>
+          <p style="font-size:14px;color:#334155;margin-bottom:16px">มีใบขอใช้รถใหม่ผ่านการอนุมัติของหัวหน้าแล้ว <strong>รอท่านจัดรถ + คนขับ (ถ้าต้องการ)</strong></p>
+          <div style="background:#f1f5f9;border-radius:12px;padding:16px;margin:16px 0">
+            <table style="width:100%;font-size:13px;color:#475569">
+              <tr><td style="padding:4px 0;font-weight:600;width:120px">ผู้ขอ:</td><td>${item.requesterName || '-'} (${item.requesterId || '-'})</td></tr>
+              <tr><td style="padding:4px 0;font-weight:600">แผนก:</td><td>${item.requesterDepartment || '-'}</td></tr>
+              <tr><td style="padding:4px 0;font-weight:600">วันที่ใช้รถ:</td><td>${p.date || '-'}</td></tr>
+              <tr><td style="padding:4px 0;font-weight:600">เวลา:</td><td>${p.timeStart || '-'} ถึง ${p.timeEnd || '-'}</td></tr>
+              <tr><td style="padding:4px 0;font-weight:600">เส้นทาง:</td><td>${p.destination || '-'}</td></tr>
+              <tr><td style="padding:4px 0;font-weight:600">วัตถุประสงค์:</td><td>${p.purpose || '-'}</td></tr>
+              <tr><td style="padding:4px 0;font-weight:600">ผู้โดยสาร:</td><td>${passengerCount} คน</td></tr>
+              <tr><td style="padding:4px 0;font-weight:600">ขับรถ:</td><td>${p.needDriver ? '<strong style="color:#dc2626">ต้องการคนขับ</strong>' : 'ขับเอง'}</td></tr>
+            </table>
+          </div>
+          <div style="text-align:center;margin:24px 0">
+            <a href="${approveUrl}" style="display:inline-block;background:#0ea5e9;color:white;padding:14px 32px;border-radius:12px;text-decoration:none;font-weight:bold;font-size:14px;box-shadow:0 4px 12px rgba(14,165,233,0.3)">
+              🚗 เปิดระบบจัดรถ
+            </a>
+          </div>
+          <p style="font-size:11px;color:#94a3b8;text-align:center;line-height:1.6">หรือเข้าระบบ GA → "คำขอใช้รถรอจัดรถ"</p>
+        </div>
+        <p style="text-align:center;font-size:10px;color:#94a3b8;margin-top:16px">SOC Systems | TBKK</p>
+      </div>
+    `;
+    const text = `ใบขอใช้รถใหม่ — รอจัดรถ\n\nผู้ขอ: ${item.requesterName} (${item.requesterId})\nวันที่: ${p.date}\nเวลา: ${p.timeStart}-${p.timeEnd}\nเส้นทาง: ${p.destination}\nต้องการคนขับ: ${p.needDriver ? 'ใช่' : 'ไม่'}\n\nเปิดระบบ: ${approveUrl}`;
+
+    await postEmail('/api/send-email', { to, cc, subject, html, text });
+    console.log(`[notifyEmail] แจ้ง GA ใบขอใช้รถใหม่ → to:${to} cc:${cc.join(',')}`);
+  } catch (err) {
+    console.warn('[notifyEmail] notifyGAVehicleRequest error:', err);
   }
 }
 

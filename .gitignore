@@ -25,3 +25,14 @@ tmp_ios_zip/
 server/firebase-admin-key.json
 firebase-admin-key.json
 *-firebase-adminsdk-*.json
+
+# Firestore backup files (มีข้อมูลผู้ใช้ — ห้าม commit!)
+backups/
+backup-*.json
+
+# Backups (มีข้อมูลพนักงาน — ห้าม commit)
+backups/
+
+# Docker env (มี API keys + SMTP)
+.env.docker
+.env.bak

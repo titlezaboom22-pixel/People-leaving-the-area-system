@@ -1,0 +1,14 @@
+# 🚫 ห้ามใส่ไฟล์เหล่านี้ใน Docker image
+node_modules
+dist
+.git
+.env
+.env.local
+*.log
+.vscode
+.idea
+README.md
+*.md
+scripts/
+backups/
+logs/

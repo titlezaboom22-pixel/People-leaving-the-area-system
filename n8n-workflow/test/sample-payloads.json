@@ -1,0 +1,10 @@
+{
+  "documentId": "WF-2026-04-25-DEMO",
+  "documentType": "vehicle",
+  "requesterName": "อรรถชัย กิตติมโนรักษ์",
+  "requesterDept": "EEE",
+  "requesterEmail": "intern_attachai.k@tbkk.co.th",
+  "approverEmail": "sarayut_r@tbkk.co.th",
+  "approveUrl": "https://tbkk-system.web.app/approve?id=WF-2026-04-25-DEMO",
+  "details": "ขอใช้รถไปประชุมที่บริษัทคู่ค้า ปลายทาง: บางพลี, เวลา: 14:00, จำนวนผู้ร่วมเดินทาง: 3 คน"
+}
